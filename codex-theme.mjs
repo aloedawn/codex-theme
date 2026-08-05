@@ -294,11 +294,64 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
 }
 
 #codex-theme-usage-panel .codex-theme-usage-fill {
+  position: relative;
   height: 100%;
+  overflow: hidden;
   border-radius: inherit;
   background: currentColor;
   opacity: 0.72;
-  transition: width 180ms ease;
+  transition: width 180ms ease, opacity 240ms ease;
+}
+
+:root[data-codex-theme-session-active="true"] #codex-theme-usage-panel .codex-theme-usage-fill {
+  opacity: 1;
+}
+
+#codex-theme-usage-panel .codex-theme-usage-fill::before {
+  position: absolute;
+  inset: 0;
+  width: 200%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    hsl(0deg 100% 60%) 0%,
+    hsl(60deg 100% 60%) 8.333%,
+    hsl(120deg 100% 60%) 16.667%,
+    hsl(180deg 100% 60%) 25%,
+    hsl(240deg 100% 60%) 33.333%,
+    hsl(300deg 100% 60%) 41.667%,
+    hsl(360deg 100% 60%) 50%,
+    hsl(60deg 100% 60%) 58.333%,
+    hsl(120deg 100% 60%) 66.667%,
+    hsl(180deg 100% 60%) 75%,
+    hsl(240deg 100% 60%) 83.333%,
+    hsl(300deg 100% 60%) 91.667%,
+    hsl(360deg 100% 60%) 100%
+  );
+  content: "";
+  opacity: 0;
+  transform: translateX(0);
+  animation: codex-theme-usage-rainbow 2.4s linear infinite;
+  animation-play-state: paused;
+  transition: opacity 240ms ease;
+  will-change: transform;
+}
+
+:root[data-codex-theme-session-active="true"] #codex-theme-usage-panel .codex-theme-usage-fill::before {
+  opacity: 1;
+  animation-play-state: running;
+}
+
+@keyframes codex-theme-usage-rainbow {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #codex-theme-usage-panel .codex-theme-usage-fill::before {
+    animation-duration: 8s;
+  }
 }
 
 [data-codex-theme-rainbow-composer="active"] {
@@ -317,6 +370,7 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
   opacity: 0;
   transform: translateZ(0);
   backface-visibility: hidden;
+  transition: opacity 240ms ease;
   will-change: transform;
 }
 
@@ -852,6 +906,7 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
     let rainbowActiveUntil = 0;
     const RAINBOW_FRAME_INTERVAL_MS = 1000 / 30;
     const RAINBOW_ACTIVE_GRACE_MS = 900;
+    const RAINBOW_FADE_DURATION_MS = 240;
 
     const findComposerSurface = () => {
       const editors = Array.from(document.querySelectorAll(
@@ -921,7 +976,13 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
     const stopRainbowAnimation = () => {
       if (rainbowAnimationFrame) cancelAnimationFrame(rainbowAnimationFrame);
       rainbowAnimationFrame = 0;
-      rainbowCanvas?.remove();
+      const canvasToRemove = rainbowCanvas;
+      if (canvasToRemove?.isConnected && canvasToRemove.dataset.ready === "true") {
+        delete canvasToRemove.dataset.ready;
+        setTimeout(() => canvasToRemove.remove(), RAINBOW_FADE_DURATION_MS);
+      } else {
+        canvasToRemove?.remove();
+      }
       rainbowCanvas = null;
       rainbowSurface = null;
       rainbowLastDrawTimestamp = -Infinity;
@@ -1082,6 +1143,13 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       rainbowAnimationFrame = requestAnimationFrame(animateRainbow);
     };
 
+    const setSessionActive = (active) => {
+      const value = active ? "true" : "false";
+      if (document.documentElement.dataset.codexThemeSessionActive !== value) {
+        document.documentElement.dataset.codexThemeSessionActive = value;
+      }
+    };
+
     const renderComposerActivity = () => {
       const surface = findComposerSurface();
       if (!(surface instanceof HTMLElement)) {
@@ -1090,11 +1158,13 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
           && rainbowSurface.isConnected
           && performance.now() < rainbowActiveUntil
         ) {
+          setSessionActive(true);
           return;
         }
         for (const previous of document.querySelectorAll('[data-codex-theme-rainbow-composer]')) {
           previous.removeAttribute("data-codex-theme-rainbow-composer");
         }
+        setSessionActive(false);
         stopRainbowAnimation();
         return;
       }
@@ -1109,10 +1179,12 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       const active = detectedActive || (rainbowSurface === surface && now < rainbowActiveUntil);
       if (!active) {
         rainbowActiveUntil = 0;
+        setSessionActive(false);
         surface.removeAttribute("data-codex-theme-rainbow-composer");
         stopRainbowAnimation();
         return;
       }
+      setSessionActive(true);
       surface.setAttribute("data-codex-theme-rainbow-composer", "active");
       startRainbowAnimation(surface);
     };
@@ -1651,6 +1723,20 @@ async function main() {
                 scroll: scroll ? rectOf(scroll) : null,
                 usageState: globalThis.__codexThemeUiState?.usage ?? null,
                 usageBadge: document.getElementById("codex-theme-usage-badge")?.outerHTML ?? null,
+                usageRainbow: (() => {
+                  const fill = document.querySelector("#codex-theme-usage-panel .codex-theme-usage-fill");
+                  const pseudoStyle = fill ? getComputedStyle(fill, "::before") : null;
+                  return fill ? {
+                    sessionActive: document.documentElement.dataset.codexThemeSessionActive ?? null,
+                    width: getComputedStyle(fill).width,
+                    animationName: pseudoStyle?.animationName ?? null,
+                    animationDuration: pseudoStyle?.animationDuration ?? null,
+                    animationPlayState: pseudoStyle?.animationPlayState ?? null,
+                    opacity: pseudoStyle?.opacity ?? null,
+                    transitionDuration: pseudoStyle?.transitionDuration ?? null,
+                    transform: pseudoStyle?.transform ?? null,
+                  } : null;
+                })(),
                 rainbowComposer: (() => {
                   const composer = document.querySelector('[data-codex-theme-rainbow-composer="active"]');
                   const canvas = composer?.querySelector(".codex-theme-rainbow-canvas");
@@ -1666,6 +1752,7 @@ async function main() {
                       contain: canvasStyle?.contain ?? null,
                       filter: canvasStyle?.filter ?? null,
                       opacity: canvasStyle?.opacity ?? null,
+                      transitionDuration: canvasStyle?.transitionDuration ?? null,
                     } : null,
                   } : null;
                 })(),
