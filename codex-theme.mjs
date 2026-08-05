@@ -313,7 +313,15 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
   width: calc(100% + 6px);
   height: calc(100% + 6px);
   pointer-events: none;
-  filter: saturate(1.1) drop-shadow(0 0 2px rgb(100 210 255 / 32%));
+  contain: strict;
+  opacity: 0;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: transform;
+}
+
+.codex-theme-rainbow-canvas[data-ready="true"] {
+  opacity: 1;
 }
 
 .codex-theme-server-latency {
@@ -833,6 +841,18 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       }
     };
 
+    let rainbowCanvas = null;
+    let rainbowSurface = null;
+    let rainbowAnimationFrame = 0;
+    let rainbowLastDrawTimestamp = -Infinity;
+    let rainbowMetricsKey = "";
+    let rainbowGeometryKey = "";
+    let rainbowSegments = [];
+    let rainbowRadius = 22;
+    let rainbowActiveUntil = 0;
+    const RAINBOW_FRAME_INTERVAL_MS = 1000 / 30;
+    const RAINBOW_ACTIVE_GRACE_MS = 900;
+
     const findComposerSurface = () => {
       const editors = Array.from(document.querySelectorAll(
         'textarea, [contenteditable="true"][role="textbox"], [contenteditable="true"][data-placeholder]',
@@ -849,6 +869,15 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
         });
       const editor = editors[0];
       if (!(editor instanceof HTMLElement)) return null;
+
+      if (
+        rainbowSurface instanceof HTMLElement
+        && rainbowSurface.isConnected
+        && isVisible(rainbowSurface)
+        && rainbowSurface.contains(editor)
+      ) {
+        return rainbowSurface;
+      }
 
       const form = editor.closest("form");
       if (form instanceof HTMLElement && isVisible(form)) return form;
@@ -889,16 +918,17 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       return false;
     };
 
-    let rainbowCanvas = null;
-    let rainbowSurface = null;
-    let rainbowAnimationFrame = 0;
-
     const stopRainbowAnimation = () => {
       if (rainbowAnimationFrame) cancelAnimationFrame(rainbowAnimationFrame);
       rainbowAnimationFrame = 0;
       rainbowCanvas?.remove();
       rainbowCanvas = null;
       rainbowSurface = null;
+      rainbowLastDrawTimestamp = -Infinity;
+      rainbowMetricsKey = "";
+      rainbowGeometryKey = "";
+      rainbowSegments = [];
+      rainbowRadius = 22;
     };
 
     const pointOnRoundedRect = (distance, width, height, radius) => {
@@ -958,7 +988,7 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       const cssWidth = rainbowCanvas.clientWidth;
       const cssHeight = rainbowCanvas.clientHeight;
       if (cssWidth < 2 || cssHeight < 2) return;
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.25);
       const pixelWidth = Math.round(cssWidth * pixelRatio);
       const pixelHeight = Math.round(cssHeight * pixelRatio);
       if (rainbowCanvas.width !== pixelWidth || rainbowCanvas.height !== pixelHeight) {
@@ -973,27 +1003,42 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       const inset = 3;
       const width = Math.max(1, cssWidth - inset * 2);
       const height = Math.max(1, cssHeight - inset * 2);
-      const surfaceRadius = Number.parseFloat(getComputedStyle(rainbowSurface).borderRadius);
-      const radius = Math.min(
-        Math.max(Number.isFinite(surfaceRadius) && surfaceRadius >= 8 ? surfaceRadius : 22, 8),
-        width / 2,
-        height / 2,
-      );
+      const metricsKey = String(cssWidth) + "x" + String(cssHeight);
+      if (rainbowMetricsKey !== metricsKey) {
+        const surfaceRadius = Number.parseFloat(getComputedStyle(rainbowSurface).borderRadius);
+        rainbowRadius = Math.min(
+          Math.max(Number.isFinite(surfaceRadius) && surfaceRadius >= 8 ? surfaceRadius : 22, 8),
+          width / 2,
+          height / 2,
+        );
+        rainbowMetricsKey = metricsKey;
+      }
+      const radius = rainbowRadius;
       const horizontal = Math.max(0, width - radius * 2);
       const vertical = Math.max(0, height - radius * 2);
       const perimeter = horizontal * 2 + vertical * 2 + Math.PI * radius * 2;
-      const segmentCount = Math.max(240, Math.ceil(perimeter / 4));
+      const segmentCount = Math.min(180, Math.max(120, Math.ceil(perimeter / 10)));
       const duration = matchMedia("(prefers-reduced-motion: reduce)").matches ? 8_000 : 2_400;
       const phase = (timestamp % duration) / duration;
+
+      const geometryKey = metricsKey + ":" + String(Math.round(radius * 10)) + ":" + String(segmentCount);
+      if (rainbowGeometryKey !== geometryKey) {
+        rainbowGeometryKey = geometryKey;
+        rainbowSegments = Array.from({ length: segmentCount }, (_, index) => {
+          const startDistance = perimeter * index / segmentCount;
+          const endDistance = perimeter * (index + 1.35) / segmentCount;
+          return {
+            start: pointOnRoundedRect(startDistance, width, height, radius),
+            end: pointOnRoundedRect(endDistance, width, height, radius),
+          };
+        });
+      }
 
       context.lineWidth = 2;
       context.lineCap = "round";
       context.lineJoin = "round";
-      for (let index = 0; index < segmentCount; index += 1) {
-        const startDistance = perimeter * index / segmentCount;
-        const endDistance = perimeter * (index + 1.35) / segmentCount;
-        const start = pointOnRoundedRect(startDistance, width, height, radius);
-        const end = pointOnRoundedRect(endDistance, width, height, radius);
+      for (let index = 0; index < rainbowSegments.length; index += 1) {
+        const { start, end } = rainbowSegments[index];
         const hue = ((index / segmentCount - phase) * 360 + 360) % 360;
         context.strokeStyle = "hsl(" + String(hue) + "deg 100% 60%)";
         context.beginPath();
@@ -1001,6 +1046,7 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
         context.lineTo(end.x + inset, end.y + inset);
         context.stroke();
       }
+      rainbowCanvas.dataset.ready = "true";
     };
 
     const animateRainbow = (timestamp) => {
@@ -1013,7 +1059,10 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
         stopRainbowAnimation();
         return;
       }
-      drawRainbowFrame(timestamp);
+      if (timestamp - rainbowLastDrawTimestamp >= RAINBOW_FRAME_INTERVAL_MS) {
+        drawRainbowFrame(timestamp);
+        rainbowLastDrawTimestamp = timestamp;
+      }
       rainbowAnimationFrame = requestAnimationFrame(animateRainbow);
     };
 
@@ -1026,22 +1075,40 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       surface.appendChild(canvas);
       rainbowCanvas = canvas;
       rainbowSurface = surface;
+      rainbowLastDrawTimestamp = -Infinity;
+      rainbowMetricsKey = "";
+      rainbowGeometryKey = "";
+      rainbowSegments = [];
       rainbowAnimationFrame = requestAnimationFrame(animateRainbow);
     };
 
     const renderComposerActivity = () => {
       const surface = findComposerSurface();
+      if (!(surface instanceof HTMLElement)) {
+        if (
+          rainbowSurface instanceof HTMLElement
+          && rainbowSurface.isConnected
+          && performance.now() < rainbowActiveUntil
+        ) {
+          return;
+        }
+        for (const previous of document.querySelectorAll('[data-codex-theme-rainbow-composer]')) {
+          previous.removeAttribute("data-codex-theme-rainbow-composer");
+        }
+        stopRainbowAnimation();
+        return;
+      }
       for (const previous of document.querySelectorAll('[data-codex-theme-rainbow-composer]')) {
         if (previous !== surface) {
           previous.removeAttribute("data-codex-theme-rainbow-composer");
         }
       }
-      if (!(surface instanceof HTMLElement)) {
-        stopRainbowAnimation();
-        return;
-      }
-      const active = composerIsActive(surface);
+      const now = performance.now();
+      const detectedActive = composerIsActive(surface);
+      if (detectedActive) rainbowActiveUntil = now + RAINBOW_ACTIVE_GRACE_MS;
+      const active = detectedActive || (rainbowSurface === surface && now < rainbowActiveUntil);
       if (!active) {
+        rainbowActiveUntil = 0;
         surface.removeAttribute("data-codex-theme-rainbow-composer");
         stopRainbowAnimation();
         return;
@@ -1051,14 +1118,18 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
     };
 
     let renderFrame = 0;
+    let renderTimer = 0;
     const scheduleRender = () => {
-      if (renderFrame) return;
-      renderFrame = requestAnimationFrame(() => {
-        renderFrame = 0;
-        renderUsagePanel();
-        renderServerLatencies();
-        renderComposerActivity();
-      });
+      if (renderFrame || renderTimer) return;
+      renderTimer = setTimeout(() => {
+        renderTimer = 0;
+        renderFrame = requestAnimationFrame(() => {
+          renderFrame = 0;
+          renderUsagePanel();
+          renderServerLatencies();
+          renderComposerActivity();
+        });
+      }, 100);
     };
 
     const install = () => {
@@ -1582,8 +1653,24 @@ async function main() {
                 usageBadge: document.getElementById("codex-theme-usage-badge")?.outerHTML ?? null,
                 rainbowComposer: (() => {
                   const composer = document.querySelector('[data-codex-theme-rainbow-composer="active"]');
-                  return composer ? { tag: composer.tagName, className: composer.className, rect: rectOf(composer) } : null;
+                  const canvas = composer?.querySelector(".codex-theme-rainbow-canvas");
+                  const canvasStyle = canvas ? getComputedStyle(canvas) : null;
+                  return composer ? {
+                    tag: composer.tagName,
+                    className: composer.className,
+                    rect: rectOf(composer),
+                    canvasCount: composer.querySelectorAll(".codex-theme-rainbow-canvas").length,
+                    canvas: canvas ? {
+                      rect: rectOf(canvas),
+                      ready: canvas.dataset.ready ?? null,
+                      contain: canvasStyle?.contain ?? null,
+                      filter: canvasStyle?.filter ?? null,
+                      opacity: canvasStyle?.opacity ?? null,
+                    } : null,
+                  } : null;
                 })(),
+                mainSurfaces: Array.from(document.querySelectorAll('[data-app-shell-main-surface], [class*="_MainContentSurface_"]'))
+                  .map((surface) => ({ tag: surface.tagName, className: surface.className, rect: rectOf(surface) })),
                 outsideButtons,
                 aliases,
                 usageResources: performance.getEntriesByType("resource").map((entry) => entry.name).filter((name) => name.includes("/wham/usage")),
