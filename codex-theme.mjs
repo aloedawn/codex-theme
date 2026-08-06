@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const PROJECT_PATH = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_IMAGE_PATH = path.join(PROJECT_PATH, "image.jpg");
+const DEFAULT_FIRE_PATH = path.join(PROJECT_PATH, "fire.gif");
 const DEFAULT_PROFILE_PATH = path.join(
   os.homedir(),
   "Library",
@@ -28,6 +29,7 @@ const APP_CANDIDATES = [
 function parseArguments(argv) {
   const options = {
     imagePath: DEFAULT_IMAGE_PATH,
+    firePath: DEFAULT_FIRE_PATH,
     profilePath: DEFAULT_PROFILE_PATH,
     skipRemoteSshBoot: false,
     dryRun: false,
@@ -40,6 +42,8 @@ function parseArguments(argv) {
     const argument = argv[index];
     if (argument === "--image") {
       options.imagePath = path.resolve(argv[++index] ?? "");
+    } else if (argument === "--fire") {
+      options.firePath = path.resolve(argv[++index] ?? "");
     } else if (argument === "--profile") {
       options.profilePath = path.resolve(argv[++index] ?? "");
     } else if (argument === "--skip-remote-ssh-boot") {
@@ -70,6 +74,7 @@ function printHelp() {
 
 옵션:
   --image <경로>              배경 JPEG/PNG 경로
+  --fire <경로>               투명 불꽃 GIF 경로
   --profile <경로>            전용 Electron 프로필 경로
   --skip-remote-ssh-boot      검증용: 원격 SSH 앱 서버 부팅 생략
   --dry-run                   파일만 검사하고 앱은 실행하지 않음
@@ -83,10 +88,17 @@ function findAppExecutable() {
   return APP_CANDIDATES.find((candidate) => fs.existsSync(candidate));
 }
 
-function imageDataUrl(imagePath) {
-  const extension = path.extname(imagePath).toLowerCase();
-  const mimeType = extension === ".png" ? "image/png" : "image/jpeg";
-  return `data:${mimeType};base64,${fs.readFileSync(imagePath).toString("base64")}`;
+function assetDataUrl(assetPath) {
+  const extension = path.extname(assetPath).toLowerCase();
+  const mimeTypes = {
+    ".gif": "image/gif",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+  };
+  const mimeType = mimeTypes[extension];
+  if (mimeType == null) throw new Error(`지원하지 않는 이미지 형식이옵니다: ${extension}`);
+  return `data:${mimeType};base64,${fs.readFileSync(assetPath).toString("base64")}`;
 }
 
 function parsePinnedSshHosts(configPath) {
@@ -206,7 +218,7 @@ function writeUsageCache(cachePath, usage) {
   }
 }
 
-function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
+function wallpaperSource(dataUrl, fireDataUrl, { rainbowPreview = false } = {}) {
   const css = `
 :root {
   --codex-chat-secondary: rgb(250 251 250 / 80%);
@@ -240,6 +252,14 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
   background-size: cover !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+  position: relative !important;
+  isolation: isolate;
+}
+
+:is([data-app-shell-main-surface], [class*="_MainContentSurface_"])
+  > :not(.codex-theme-thumb-fire-layer) {
+  position: relative;
+  z-index: 1;
 }
 
 :where(a, [role="menuitem"])[href*="pro_variant=2x"][href*="#pricing"],
@@ -310,7 +330,7 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
 #codex-theme-usage-panel .codex-theme-usage-fill::before {
   position: absolute;
   inset: 0;
-  width: 200%;
+  width: 250%;
   border-radius: inherit;
   background: linear-gradient(
     90deg,
@@ -331,7 +351,7 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
   content: "";
   opacity: 0;
   transform: translateX(0);
-  animation: codex-theme-usage-rainbow 2.4s linear infinite;
+  animation: codex-theme-usage-rainbow 3s linear infinite;
   animation-play-state: paused;
   transition: opacity 240ms ease;
   will-change: transform;
@@ -350,7 +370,7 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
 
 @media (prefers-reduced-motion: reduce) {
   #codex-theme-usage-panel .codex-theme-usage-fill::before {
-    animation-duration: 8s;
+    animation-duration: 10s;
   }
 }
 
@@ -378,12 +398,71 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
   opacity: 1;
 }
 
-.codex-theme-server-latency {
+.codex-theme-thumb-fire-layer {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+
+.codex-theme-thumb-fire {
+  position: absolute;
+  display: block;
+  object-fit: contain;
+  object-position: center bottom;
+  pointer-events: none;
+  contain: strict;
+  opacity: 0;
+  transform: scale(var(--codex-theme-fire-scale-x, 1), var(--codex-theme-fire-scale-y, 1)) translateZ(0);
+  transform-origin: 50% 100%;
+  backface-visibility: hidden;
+  mix-blend-mode: screen;
+  transition: opacity 320ms ease, transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: opacity, transform;
+}
+
+.codex-theme-thumb-fire[data-active="true"][data-ready="true"] {
+  opacity: 0.96;
+}
+
+.codex-theme-server-signal {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
   margin-left: 6px;
+  color: rgb(54 204 134);
+  transition: color 180ms ease, opacity 180ms ease;
+}
+
+.codex-theme-server-signal[data-bars="0"] {
   color: var(--color-token-description-foreground);
-  font-size: 0.72em;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  opacity: 0.48;
+}
+
+.codex-theme-server-signal svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  overflow: visible;
+}
+
+.codex-theme-server-signal-bar {
+  fill: currentColor;
+  opacity: 0.18;
+  transition: opacity 180ms ease;
+}
+
+.codex-theme-server-signal-bar[data-active="true"] {
+  opacity: 1;
+}
+
+[data-codex-theme-native-server-status="true"] {
+  display: none !important;
 }
 
 `;
@@ -392,6 +471,7 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
     const STYLE_ID = "codex-theme-style";
     const USAGE_PANEL_ID = "codex-theme-usage-panel";
     const RAINBOW_PREVIEW = ${JSON.stringify(rainbowPreview)};
+    const FIRE_DATA_URL = ${JSON.stringify(fireDataUrl)};
     const CSS = ${JSON.stringify(css)};
     const state = globalThis.__codexThemeUiState || { usage: null, latencies: {} };
     globalThis.__codexThemeUiState = state;
@@ -853,23 +933,74 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       }
     };
 
+    const serverSignalBars = (latency) => {
+      if (!Number.isFinite(latency)) return 0;
+      if (latency <= 40) return 4;
+      if (latency <= 100) return 3;
+      if (latency <= 250) return 2;
+      return 1;
+    };
+
+    const createServerSignal = (alias) => {
+      const signal = document.createElement("span");
+      signal.className = "codex-theme-server-signal";
+      signal.dataset.hostAlias = alias;
+      signal.setAttribute("role", "img");
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", "0 0 16 16");
+      svg.setAttribute("aria-hidden", "true");
+      const bars = [
+        { x: 1, y: 11, width: 2.5, height: 4 },
+        { x: 4.8, y: 8, width: 2.5, height: 7 },
+        { x: 8.6, y: 5, width: 2.5, height: 10 },
+        { x: 12.4, y: 2, width: 2.5, height: 13 },
+      ];
+      bars.forEach((bar, index) => {
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.classList.add("codex-theme-server-signal-bar");
+        rect.dataset.index = String(index + 1);
+        rect.setAttribute("x", String(bar.x));
+        rect.setAttribute("y", String(bar.y));
+        rect.setAttribute("width", String(bar.width));
+        rect.setAttribute("height", String(bar.height));
+        rect.setAttribute("rx", "1.25");
+        svg.appendChild(rect);
+      });
+      signal.appendChild(svg);
+      return signal;
+    };
+
     const renderServerLatencies = () => {
       const panel = document.querySelector(".app-shell-left-panel");
       const scroll = panel?.querySelector("[data-app-action-sidebar-scroll]");
       if (!(panel instanceof HTMLElement) || !(scroll instanceof HTMLElement)) return;
       const panelRect = panel.getBoundingClientRect();
+      const latencies = state.latencies || {};
 
-      for (const badge of scroll.querySelectorAll(".codex-theme-server-latency")) {
-        const alias = badge.getAttribute("data-host-alias");
-        const latency = alias == null ? null : state.latencies?.[alias];
-        if (!Number.isFinite(latency)) badge.remove();
+      for (const oldBadge of scroll.querySelectorAll(".codex-theme-server-latency")) {
+        oldBadge.remove();
+      }
+      for (const nativeStatus of scroll.querySelectorAll(
+        '[data-codex-theme-native-server-status="true"]',
+      )) {
+        nativeStatus.removeAttribute("data-codex-theme-native-server-status");
       }
 
-      for (const [alias, latency] of Object.entries(state.latencies || {})) {
-        if (!Number.isFinite(latency)) continue;
-        let badge = Array.from(scroll.querySelectorAll(".codex-theme-server-latency"))
+      for (const signal of scroll.querySelectorAll(".codex-theme-server-signal")) {
+        const alias = signal.getAttribute("data-host-alias");
+        if (alias == null || !Object.prototype.hasOwnProperty.call(latencies, alias)) {
+          signal.remove();
+        }
+      }
+
+      for (const [alias, latency] of Object.entries(latencies)) {
+        let signal = Array.from(scroll.querySelectorAll(".codex-theme-server-signal"))
           .find((candidate) => candidate.getAttribute("data-host-alias") === alias);
-        if (!(badge instanceof HTMLElement)) {
+        let label = null;
+        if (signal instanceof HTMLElement) {
+          label = signal.previousElementSibling;
+        }
+        if (!(label instanceof HTMLElement)) {
           const matches = [];
           const walker = document.createTreeWalker(scroll, NodeFilter.SHOW_TEXT);
           let textNode;
@@ -882,16 +1013,31 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
             matches.push(parent);
           }
           matches.sort((left, right) => right.getBoundingClientRect().left - left.getBoundingClientRect().left);
-          const label = matches[0];
+          label = matches[0];
           if (!(label instanceof HTMLElement)) continue;
-          badge = document.createElement("span");
-          badge.className = "codex-theme-server-latency";
-          badge.dataset.hostAlias = alias;
-          badge.setAttribute("aria-hidden", "true");
-          label.appendChild(badge);
         }
-        const latencyLabel = "· " + String(Math.round(latency)) + " ms";
-        if (badge.textContent !== latencyLabel) badge.textContent = latencyLabel;
+        if (!(signal instanceof HTMLElement)) {
+          signal = createServerSignal(alias);
+          label.insertAdjacentElement("afterend", signal);
+        } else if (signal.previousElementSibling !== label) {
+          label.insertAdjacentElement("afterend", signal);
+        }
+        const nativeStatus = label.parentElement?.querySelector(":scope > .sidebar-item-icon");
+        if (nativeStatus instanceof HTMLElement) {
+          nativeStatus.dataset.codexThemeNativeServerStatus = "true";
+        }
+        const barCount = serverSignalBars(latency);
+        signal.dataset.bars = String(barCount);
+        for (const bar of signal.querySelectorAll(".codex-theme-server-signal-bar")) {
+          const index = Number(bar.getAttribute("data-index"));
+          bar.setAttribute("data-active", index <= barCount ? "true" : "false");
+        }
+        const roundedLatency = Number.isFinite(latency) ? Math.round(latency) : null;
+        const description = roundedLatency == null
+          ? "未接続、信号 0/4"
+          : "応答 " + String(roundedLatency) + "ミリ秒、信号 " + String(barCount) + "/4";
+        signal.setAttribute("aria-label", description);
+        signal.title = description;
       }
     };
 
@@ -904,9 +1050,32 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
     let rainbowSegments = [];
     let rainbowRadius = 22;
     let rainbowActiveUntil = 0;
+    globalThis.__codexThemeDisposeThumbFire?.();
+    const thumbFireSessionStarts = (
+      globalThis.__codexThemeThumbFireSessionStarts
+      && typeof globalThis.__codexThemeThumbFireSessionStarts === "object"
+    ) ? globalThis.__codexThemeThumbFireSessionStarts : Object.create(null);
+    globalThis.__codexThemeThumbFireSessionStarts = thumbFireSessionStarts;
+    let thumbFireLayer = null;
+    let thumbFireCanvases = [];
+    let thumbFireSurface = null;
+    let thumbFireStopTimer = 0;
+    let thumbFireIsActive = false;
+    let thumbFireActiveStartedAt = 0;
+    let thumbFireCurrentSessionKey = null;
+    let usageActivityActiveUntil = 0;
     const RAINBOW_FRAME_INTERVAL_MS = 1000 / 30;
     const RAINBOW_ACTIVE_GRACE_MS = 900;
     const RAINBOW_FADE_DURATION_MS = 240;
+    const THUMB_FIRE_FADE_DURATION_MS = 320;
+    const THUMB_FIRE_GROWTH_DURATION_MS = 5 * 60 * 1000;
+    const WALLPAPER_IMAGE_WIDTH = 2662;
+    const WALLPAPER_IMAGE_HEIGHT = 1776;
+    const THUMB_FIRE_POINTS = [
+      { side: "left", x: 404, y: 1180 },
+      { side: "right", x: 2370, y: 1174 },
+    ];
+    const USAGE_ACTIVITY_GRACE_MS = 1_200;
 
     const findComposerSurface = () => {
       const editors = Array.from(document.querySelectorAll(
@@ -1049,7 +1218,7 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       const cssWidth = rainbowCanvas.clientWidth;
       const cssHeight = rainbowCanvas.clientHeight;
       if (cssWidth < 2 || cssHeight < 2) return;
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.25);
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
       const pixelWidth = Math.round(cssWidth * pixelRatio);
       const pixelHeight = Math.round(cssHeight * pixelRatio);
       if (rainbowCanvas.width !== pixelWidth || rainbowCanvas.height !== pixelHeight) {
@@ -1078,7 +1247,7 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       const horizontal = Math.max(0, width - radius * 2);
       const vertical = Math.max(0, height - radius * 2);
       const perimeter = horizontal * 2 + vertical * 2 + Math.PI * radius * 2;
-      const segmentCount = Math.min(180, Math.max(120, Math.ceil(perimeter / 10)));
+      const segmentCount = Math.min(360, Math.max(240, Math.ceil(perimeter / 5)));
       const duration = matchMedia("(prefers-reduced-motion: reduce)").matches ? 8_000 : 2_400;
       const phase = (timestamp % duration) / duration;
 
@@ -1107,7 +1276,15 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
         context.lineTo(end.x + inset, end.y + inset);
         context.stroke();
       }
-      rainbowCanvas.dataset.ready = "true";
+      if (rainbowCanvas.dataset.ready !== "true") rainbowCanvas.dataset.ready = "true";
+      const pixelRatioValue = String(pixelRatio);
+      if (rainbowCanvas.dataset.pixelRatio !== pixelRatioValue) {
+        rainbowCanvas.dataset.pixelRatio = pixelRatioValue;
+      }
+      const segmentCountValue = String(segmentCount);
+      if (rainbowCanvas.dataset.segmentCount !== segmentCountValue) {
+        rainbowCanvas.dataset.segmentCount = segmentCountValue;
+      }
     };
 
     const animateRainbow = (timestamp) => {
@@ -1143,11 +1320,375 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       rainbowAnimationFrame = requestAnimationFrame(animateRainbow);
     };
 
-    const setSessionActive = (active) => {
+    const findMainSurface = () => Array.from(document.querySelectorAll(
+      '[data-app-shell-main-surface], [class*="_MainContentSurface_"]',
+    ))
+      .filter((surface) => surface instanceof HTMLElement && isVisible(surface))
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return rightRect.width * rightRect.height - leftRect.width * leftRect.height;
+      })[0] ?? null;
+
+    const removeThumbFireCanvases = () => {
+      thumbFireLayer?.remove();
+      thumbFireLayer = null;
+      thumbFireCanvases = [];
+      thumbFireSurface = null;
+    };
+
+    const disposeThumbFire = () => {
+      if (thumbFireStopTimer) clearTimeout(thumbFireStopTimer);
+      thumbFireStopTimer = 0;
+      thumbFireIsActive = false;
+      thumbFireActiveStartedAt = 0;
+      thumbFireCurrentSessionKey = null;
+      removeThumbFireCanvases();
+      globalThis.__codexThemeThumbFireState = { active: false, fires: [] };
+    };
+    globalThis.__codexThemeDisposeThumbFire = disposeThumbFire;
+
+    const ensureThumbFireCanvases = (surface) => {
+      if (
+        thumbFireSurface === surface
+        && thumbFireCanvases.length === THUMB_FIRE_POINTS.length
+        && thumbFireCanvases.every((fire) => fire.canvas.isConnected)
+      ) {
+        return;
+      }
+      removeThumbFireCanvases();
+      thumbFireSurface = surface;
+      const layer = document.createElement("div");
+      layer.className = "codex-theme-thumb-fire-layer";
+      layer.setAttribute("aria-hidden", "true");
+      surface.prepend(layer);
+      thumbFireLayer = layer;
+      thumbFireCanvases = THUMB_FIRE_POINTS.map((point) => {
+        const canvas = document.createElement("img");
+        canvas.className = "codex-theme-thumb-fire";
+        canvas.dataset.side = point.side;
+        canvas.alt = "";
+        canvas.draggable = false;
+        canvas.decoding = "async";
+        canvas.setAttribute("aria-hidden", "true");
+        canvas.addEventListener("load", () => {
+          canvas.dataset.ready = "true";
+        }, { once: true });
+        canvas.src = FIRE_DATA_URL;
+        if (canvas.complete && canvas.naturalWidth > 0) canvas.dataset.ready = "true";
+        layer.appendChild(canvas);
+        return {
+          canvas,
+          point,
+          cssWidth: 0,
+          cssHeight: 0,
+          visualWidth: 0,
+          visualHeight: 0,
+          growthProgress: 0,
+        };
+      });
+    };
+
+    const positionThumbFireCanvases = () => {
+      if (
+        !(thumbFireSurface instanceof HTMLElement)
+        || !(thumbFireLayer instanceof HTMLElement)
+        || !isVisible(thumbFireSurface)
+      ) {
+        return false;
+      }
+      const surfaceRect = thumbFireSurface.getBoundingClientRect();
+
+      const scale = Math.max(
+        surfaceRect.width / WALLPAPER_IMAGE_WIDTH,
+        surfaceRect.height / WALLPAPER_IMAGE_HEIGHT,
+      );
+      const imageWidth = WALLPAPER_IMAGE_WIDTH * scale;
+      const imageHeight = WALLPAPER_IMAGE_HEIGHT * scale;
+      const imageOffsetX = (surfaceRect.width - imageWidth) / 2;
+      const imageOffsetY = (surfaceRect.height - imageHeight) / 2;
+      const baseWidth = Math.max(72, Math.min(112, 160 * scale));
+      const baseHeight = Math.max(118, Math.min(180, 255 * scale));
+      const elapsedMs = thumbFireIsActive && thumbFireActiveStartedAt > 0
+        ? Math.max(0, Date.now() - thumbFireActiveStartedAt)
+        : 0;
+      const growthStepCount = Math.max(1, Math.round(THUMB_FIRE_GROWTH_DURATION_MS / 1000));
+      const growthStep = Math.min(growthStepCount, Math.floor(elapsedMs / 1000));
+      const growthProgress = growthStep / growthStepCount;
+      const easedGrowth = Math.pow(growthProgress, 0.72);
+      const secondPhase = (elapsedMs % 1000) / 1000;
+      const secondPulse = Math.sin(secondPhase * Math.PI);
+      const pulseScaleX = 1 + secondPulse * (0.035 + growthProgress * 0.075);
+      const pulseScaleY = 1 + secondPulse * (0.025 + growthProgress * 0.055);
+      const canvasWidth = baseWidth;
+      const canvasHeight = baseHeight;
+      const visualWidth = canvasWidth;
+      const visualHeight = canvasHeight;
+      const previousCanvasWidth = baseWidth * 2;
+      const previousCanvasHeight = baseHeight * 2.35;
+      const maximumScaleX = Math.max(1, surfaceRect.width * 0.9 / previousCanvasWidth);
+      const maximumScaleY = Math.max(1, surfaceRect.height * 1.12 / previousCanvasHeight);
+      const transformScaleX = (
+        (1 + easedGrowth)
+        * (1 + easedGrowth * (maximumScaleX - 1))
+        * pulseScaleX
+      );
+      const transformScaleY = (
+        (1 + easedGrowth * 1.35)
+        * (1 + easedGrowth * (maximumScaleY - 1))
+        * pulseScaleY
+      );
+
+      for (const fire of thumbFireCanvases) {
+        const anchorX = imageOffsetX + fire.point.x * scale;
+        const anchorY = imageOffsetY + fire.point.y * scale;
+        fire.canvas.style.left = String(Math.round((anchorX - canvasWidth / 2) * 10) / 10) + "px";
+        fire.canvas.style.top = String(Math.round((anchorY - canvasHeight) * 10) / 10) + "px";
+        fire.canvas.style.width = String(Math.round(canvasWidth * 10) / 10) + "px";
+        fire.canvas.style.height = String(Math.round(canvasHeight * 10) / 10) + "px";
+        fire.canvas.style.setProperty("--codex-theme-fire-scale-x", String(transformScaleX));
+        fire.canvas.style.setProperty("--codex-theme-fire-scale-y", String(transformScaleY));
+        fire.cssWidth = canvasWidth;
+        fire.cssHeight = canvasHeight;
+        fire.visualWidth = visualWidth;
+        fire.visualHeight = visualHeight;
+        fire.growthProgress = growthProgress;
+        fire.transformScaleX = transformScaleX;
+        fire.transformScaleY = transformScaleY;
+      }
+
+      globalThis.__codexThemeThumbFireState = {
+        active: thumbFireIsActive,
+        sessionKey: thumbFireCurrentSessionKey,
+        retainedSessionCount: Object.keys(thumbFireSessionStarts).length,
+        surface: {
+          x: Math.round(surfaceRect.x),
+          y: Math.round(surfaceRect.y),
+          width: Math.round(surfaceRect.width),
+          height: Math.round(surfaceRect.height),
+        },
+        imageScale: Math.round(scale * 1000) / 1000,
+        elapsedMs: Math.round(elapsedMs),
+        growthStep,
+        growthProgress: Math.round(growthProgress * 1000) / 1000,
+        fires: thumbFireCanvases.map((fire) => ({
+          side: fire.point.side,
+          left: Number.parseFloat(fire.canvas.style.left),
+          top: Number.parseFloat(fire.canvas.style.top),
+          canvasWidth: Math.round(fire.cssWidth),
+          canvasHeight: Math.round(fire.cssHeight),
+          visualWidth: Math.round(fire.visualWidth * fire.transformScaleX),
+          visualHeight: Math.round(fire.visualHeight * fire.transformScaleY),
+          scaleX: Math.round(fire.transformScaleX * 1000) / 1000,
+          scaleY: Math.round(fire.transformScaleY * 1000) / 1000,
+        })),
+      };
+      return true;
+    };
+
+    const currentThumbFireSessionIdentity = () => {
+      const threadRows = Array.from(document.querySelectorAll(
+        '[data-app-action-sidebar-thread-row]',
+      )).filter((row) => row instanceof HTMLElement);
+      const currentThread = threadRows.find(
+        (row) => row.dataset.appActionSidebarThreadActive === "true",
+      ) || threadRows.find((row) => row.getAttribute("aria-current") === "page");
+      if (currentThread instanceof HTMLElement) {
+        const threadId = currentThread.dataset.appActionSidebarThreadId;
+        const projectList = currentThread.closest('[data-app-action-sidebar-project-list-id]');
+        const projectId = projectList instanceof HTMLElement
+          ? projectList.dataset.appActionSidebarProjectListId
+          : null;
+        if (threadId) {
+          return {
+            key: "thread:" + threadId,
+            fallbackKey: projectId ? "project:" + projectId : null,
+          };
+        }
+      }
+      const projectRows = Array.from(document.querySelectorAll(
+        '[data-app-action-sidebar-project-row]',
+      )).filter((row) => row instanceof HTMLElement);
+      const currentProject = projectRows.find((row) => row.getAttribute("aria-current") === "page");
+      const projectId = currentProject?.dataset.appActionSidebarProjectId;
+      if (projectId) return { key: "project:" + projectId, fallbackKey: null };
+      return { key: "view:unkeyed", fallbackKey: null };
+    };
+
+    const pruneThumbFireSessionStarts = () => {
+      const entries = Object.entries(thumbFireSessionStarts)
+        .filter((entry) => Number.isFinite(entry[1]))
+        .sort((left, right) => right[1] - left[1]);
+      for (const [key] of entries.slice(32)) delete thumbFireSessionStarts[key];
+    };
+
+    const renderThumbFireActivity = (active, identity) => {
+      const sessionKey = identity?.key || "view:unkeyed";
+      const surface = active ? findMainSurface() : thumbFireSurface;
+      if (active && surface instanceof HTMLElement) {
+        let startedAt = thumbFireSessionStarts[sessionKey];
+        if (!Number.isFinite(startedAt) && identity?.fallbackKey) {
+          startedAt = thumbFireSessionStarts[identity.fallbackKey];
+        }
+        if (!Number.isFinite(startedAt)) startedAt = Date.now();
+        thumbFireSessionStarts[sessionKey] = startedAt;
+        pruneThumbFireSessionStarts();
+        thumbFireCurrentSessionKey = sessionKey;
+        thumbFireActiveStartedAt = startedAt;
+        thumbFireIsActive = true;
+        ensureThumbFireCanvases(surface);
+        if (!positionThumbFireCanvases()) return;
+        if (thumbFireStopTimer) clearTimeout(thumbFireStopTimer);
+        thumbFireStopTimer = 0;
+        for (const fire of thumbFireCanvases) fire.canvas.dataset.active = "true";
+        if (globalThis.__codexThemeThumbFireState) {
+          globalThis.__codexThemeThumbFireState.active = true;
+        }
+        return;
+      }
+      if (!thumbFireIsActive) {
+        if (identity?.key) delete thumbFireSessionStarts[identity.key];
+        return;
+      }
+      thumbFireIsActive = false;
+      if (identity?.key) delete thumbFireSessionStarts[identity.key];
+      thumbFireActiveStartedAt = 0;
+      thumbFireCurrentSessionKey = null;
+      for (const fire of thumbFireCanvases) delete fire.canvas.dataset.active;
+      if (globalThis.__codexThemeThumbFireState) {
+        globalThis.__codexThemeThumbFireState.active = false;
+      }
+      if (thumbFireStopTimer) clearTimeout(thumbFireStopTimer);
+      thumbFireStopTimer = setTimeout(() => {
+        thumbFireStopTimer = 0;
+        if (thumbFireIsActive) return;
+      }, THUMB_FIRE_FADE_DURATION_MS);
+    };
+
+    const setUsageActivityActive = (active) => {
       const value = active ? "true" : "false";
       if (document.documentElement.dataset.codexThemeSessionActive !== value) {
         document.documentElement.dataset.codexThemeSessionActive = value;
       }
+    };
+
+    const rowHasActiveSessionIndicator = (row) => (
+      row.querySelector('[aria-label="Subscribed: active"]') != null
+      || Array.from(row.querySelectorAll('.animate-spin, [style*="animation-duration"]'))
+        .some((element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const duration = element.style.animationDuration;
+          const statusContainer = element.parentElement;
+          return element.querySelector("svg") != null
+            && (
+              duration === "2000ms"
+              || (
+                element.classList.contains("animate-spin")
+                && statusContainer?.classList.contains("text-token-foreground/70") === true
+              )
+            );
+        })
+    );
+
+    const activeSidebarSessionRows = () => {
+      const seenThreadIds = new Set();
+      return Array.from(document.querySelectorAll(
+        '[data-app-action-sidebar-thread-row]',
+      )).filter((row) => {
+        if (!(row instanceof HTMLElement)) return false;
+        if (!rowHasActiveSessionIndicator(row)) return false;
+        const threadId = row.dataset.appActionSidebarThreadId;
+        if (!threadId) return true;
+        if (seenThreadIds.has(threadId)) return false;
+        seenThreadIds.add(threadId);
+        return true;
+      });
+    };
+
+    const activeCollapsedProjectRows = () => {
+      const seenProjectIds = new Set();
+      return Array.from(document.querySelectorAll(
+        '[data-app-action-sidebar-project-row][data-app-action-sidebar-project-collapsed="true"]',
+      )).filter((row) => {
+        if (!(row instanceof HTMLElement) || !rowHasActiveSessionIndicator(row)) return false;
+        const projectId = row.dataset.appActionSidebarProjectId;
+        if (!projectId) return true;
+        if (seenProjectIds.has(projectId)) return false;
+        seenProjectIds.add(projectId);
+        return true;
+      });
+    };
+
+    const retainActiveThumbFireSessions = (activeThreadRows, activeProjectRows) => {
+      const now = Date.now();
+      const activeThreadIds = new Set();
+      for (const row of activeThreadRows) {
+        const threadId = row.dataset.appActionSidebarThreadId;
+        if (!threadId) continue;
+        activeThreadIds.add(threadId);
+        const threadKey = "thread:" + threadId;
+        const projectList = row.closest('[data-app-action-sidebar-project-list-id]');
+        const projectId = projectList instanceof HTMLElement
+          ? projectList.dataset.appActionSidebarProjectListId
+          : null;
+        const projectKey = projectId ? "project:" + projectId : null;
+        const inheritedStart = Number.isFinite(thumbFireSessionStarts[threadKey])
+          ? thumbFireSessionStarts[threadKey]
+          : projectKey && Number.isFinite(thumbFireSessionStarts[projectKey])
+            ? thumbFireSessionStarts[projectKey]
+            : now;
+        thumbFireSessionStarts[threadKey] = inheritedStart;
+        if (projectKey && !Number.isFinite(thumbFireSessionStarts[projectKey])) {
+          thumbFireSessionStarts[projectKey] = inheritedStart;
+        }
+      }
+      for (const row of activeProjectRows) {
+        const projectId = row.dataset.appActionSidebarProjectId;
+        if (!projectId) continue;
+        const projectKey = "project:" + projectId;
+        if (!Number.isFinite(thumbFireSessionStarts[projectKey])) {
+          thumbFireSessionStarts[projectKey] = now;
+        }
+      }
+      for (const row of document.querySelectorAll('[data-app-action-sidebar-thread-row]')) {
+        if (!(row instanceof HTMLElement)) continue;
+        const threadId = row.dataset.appActionSidebarThreadId;
+        if (
+          threadId
+          && !activeThreadIds.has(threadId)
+          && row.dataset.appActionSidebarThreadActive !== "true"
+        ) {
+          delete thumbFireSessionStarts["thread:" + threadId];
+        }
+      }
+      pruneThumbFireSessionStarts();
+    };
+
+    const renderUsageActivity = (currentComposerActive) => {
+      const now = performance.now();
+      const activeSidebarRows = activeSidebarSessionRows();
+      const sidebarActive = activeSidebarRows.length > 0;
+      const activeProjectRows = activeCollapsedProjectRows();
+      const collapsedProjectActive = activeProjectRows.length > 0;
+      retainActiveThumbFireSessions(activeSidebarRows, activeProjectRows);
+      const detectedActive = currentComposerActive || sidebarActive || collapsedProjectActive;
+      if (detectedActive) usageActivityActiveUntil = now + USAGE_ACTIVITY_GRACE_MS;
+      const active = detectedActive || now < usageActivityActiveUntil;
+      setUsageActivityActive(active);
+      globalThis.__codexThemeActivityState = {
+        currentComposerActive,
+        sidebarActive,
+        sidebarActiveCount: activeSidebarRows.length,
+        sidebarThreadIds: activeSidebarRows
+          .map((row) => row.dataset.appActionSidebarThreadId || null)
+          .filter(Boolean),
+        collapsedProjectActive,
+        collapsedProjectActiveCount: activeProjectRows.length,
+        collapsedProjectIds: activeProjectRows
+          .map((row) => row.dataset.appActionSidebarProjectId || null)
+          .filter(Boolean),
+        active,
+      };
     };
 
     const renderComposerActivity = () => {
@@ -1158,15 +1699,13 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
           && rainbowSurface.isConnected
           && performance.now() < rainbowActiveUntil
         ) {
-          setSessionActive(true);
-          return;
+          return true;
         }
         for (const previous of document.querySelectorAll('[data-codex-theme-rainbow-composer]')) {
           previous.removeAttribute("data-codex-theme-rainbow-composer");
         }
-        setSessionActive(false);
         stopRainbowAnimation();
-        return;
+        return false;
       }
       for (const previous of document.querySelectorAll('[data-codex-theme-rainbow-composer]')) {
         if (previous !== surface) {
@@ -1179,14 +1718,13 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
       const active = detectedActive || (rainbowSurface === surface && now < rainbowActiveUntil);
       if (!active) {
         rainbowActiveUntil = 0;
-        setSessionActive(false);
         surface.removeAttribute("data-codex-theme-rainbow-composer");
         stopRainbowAnimation();
-        return;
+        return false;
       }
-      setSessionActive(true);
       surface.setAttribute("data-codex-theme-rainbow-composer", "active");
       startRainbowAnimation(surface);
+      return true;
     };
 
     let renderFrame = 0;
@@ -1199,7 +1737,10 @@ function wallpaperSource(dataUrl, { rainbowPreview = false } = {}) {
           renderFrame = 0;
           renderUsagePanel();
           renderServerLatencies();
-          renderComposerActivity();
+          const currentComposerActive = renderComposerActivity();
+          const currentSessionIdentity = currentThumbFireSessionIdentity();
+          renderThumbFireActivity(currentComposerActive, currentSessionIdentity);
+          renderUsageActivity(currentComposerActive);
         });
       }, 100);
     };
@@ -1451,13 +1992,19 @@ async function main() {
   if (!appExecutable) throw new Error("/Applications에서 ChatGPT 또는 Codex 앱을 찾지 못했사옵니다.");
   if (!fs.existsSync(options.imagePath)) throw new Error(`배경 사진이 없사옵니다: ${options.imagePath}`);
   if (!fs.statSync(options.imagePath).isFile()) throw new Error(`배경 경로가 파일이 아니옵니다: ${options.imagePath}`);
+  if (!fs.existsSync(options.firePath)) throw new Error(`불꽃 GIF가 없사옵니다: ${options.firePath}`);
+  if (!fs.statSync(options.firePath).isFile()) throw new Error(`불꽃 경로가 파일이 아니옵니다: ${options.firePath}`);
 
   const extension = path.extname(options.imagePath).toLowerCase();
   if (![".jpg", ".jpeg", ".png"].includes(extension)) {
     throw new Error("배경은 JPEG 또는 PNG 파일이어야 하옵니다.");
   }
+  if (path.extname(options.firePath).toLowerCase() !== ".gif") {
+    throw new Error("불꽃은 GIF 파일이어야 하옵니다.");
+  }
 
   console.log(`[wallpaper] 사진: ${options.imagePath}`);
+  console.log(`[wallpaper] 불꽃: ${options.firePath}`);
   console.log(`[wallpaper] 앱: ${appExecutable}`);
   console.log(`[wallpaper] 전용 프로필: ${options.profilePath}`);
 
@@ -1469,7 +2016,7 @@ async function main() {
   fs.mkdirSync(options.profilePath, { recursive: true, mode: 0o700 });
   const usageCachePath = path.join(options.profilePath, "codex-theme-usage.json");
   const pinnedSshHosts = parsePinnedSshHosts(SSH_CONFIG_PATH);
-  const source = wallpaperSource(imageDataUrl(options.imagePath), {
+  const source = wallpaperSource(assetDataUrl(options.imagePath), assetDataUrl(options.firePath), {
     rainbowPreview: options.inspectUi,
   });
   const childEnvironment = { ...process.env };
@@ -1722,6 +2269,7 @@ async function main() {
                 panel: panel ? rectOf(panel) : null,
                 scroll: scroll ? rectOf(scroll) : null,
                 usageState: globalThis.__codexThemeUiState?.usage ?? null,
+                activityState: globalThis.__codexThemeActivityState ?? null,
                 usageBadge: document.getElementById("codex-theme-usage-badge")?.outerHTML ?? null,
                 usageRainbow: (() => {
                   const fill = document.querySelector("#codex-theme-usage-panel .codex-theme-usage-fill");
@@ -1749,6 +2297,10 @@ async function main() {
                     canvas: canvas ? {
                       rect: rectOf(canvas),
                       ready: canvas.dataset.ready ?? null,
+                      pixelWidth: canvas.width,
+                      pixelHeight: canvas.height,
+                      pixelRatio: canvas.dataset.pixelRatio ?? null,
+                      segmentCount: canvas.dataset.segmentCount ?? null,
                       contain: canvasStyle?.contain ?? null,
                       filter: canvasStyle?.filter ?? null,
                       opacity: canvasStyle?.opacity ?? null,
@@ -1756,6 +2308,21 @@ async function main() {
                     } : null,
                   } : null;
                 })(),
+                thumbFire: {
+                  state: globalThis.__codexThemeThumbFireState ?? null,
+                  images: Array.from(document.querySelectorAll("img.codex-theme-thumb-fire"))
+                    .map((image) => ({
+                      side: image.dataset.side ?? null,
+                      active: image.dataset.active ?? null,
+                      ready: image.dataset.ready ?? null,
+                      complete: image.complete,
+                      rect: rectOf(image),
+                      naturalWidth: image.naturalWidth,
+                      naturalHeight: image.naturalHeight,
+                      opacity: getComputedStyle(image).opacity,
+                      mixBlendMode: getComputedStyle(image).mixBlendMode,
+                    })),
+                },
                 mainSurfaces: Array.from(document.querySelectorAll('[data-app-shell-main-surface], [class*="_MainContentSurface_"]'))
                   .map((surface) => ({ tag: surface.tagName, className: surface.className, rect: rectOf(surface) })),
                 outsideButtons,
