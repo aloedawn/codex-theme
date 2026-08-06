@@ -92,7 +92,19 @@ The launcher reads only concrete matching entries from `~/.ssh/config` for these
 VPN, Proxmox, Homelab, Oracle_seoul
 ```
 
-It performs a TCP connection timing check against each configured host and port every 15 seconds. It does not authenticate or run SSH commands. If those aliases are absent, the feature simply stays hidden.
+Those are the author's personal defaults, not a required server list. To use your own SSH hosts, edit `PINNED_SSH_ALIASES` near the top of `codex-theme.mjs`:
+
+```js
+const PINNED_SSH_ALIASES = new Set([
+  "my-server",
+  "work-server",
+  "home-server",
+]);
+```
+
+Each value must exactly match a concrete `Host` alias in `~/.ssh/config` and the corresponding server label shown in the Codex sidebar. Wildcard aliases containing `*`, `!`, or `?` are ignored. After changing the list, run `./install.sh` again so the installed copy receives the updated script. If you run `Launch Codex Theme.command` directly from the repository, simply restart it instead.
+
+The launcher performs a TCP connection timing check against each configured host and port every 15 seconds. It does not authenticate or run SSH commands. If the configured aliases are absent, the feature simply stays hidden.
 
 ## How it works
 
