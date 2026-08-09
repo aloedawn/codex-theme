@@ -89,7 +89,7 @@ The background may be JPEG or PNG. The fire asset must be an animated GIF with t
 The launcher reads only concrete matching entries from `~/.ssh/config` for these aliases:
 
 ```text
-VPN, Proxmox, Homelab, Oracle_seoul
+VPN, Proxmox, Homelab, Oracle_seoul, Oracle_osaka, Oracle_chuncheon
 ```
 
 Those are the author's personal defaults, not a required server list. To use your own SSH hosts, edit `PINNED_SSH_ALIASES` near the top of `codex-theme.mjs`:
@@ -111,9 +111,27 @@ The launcher performs a TCP connection timing check against each configured host
 - Starts the official Codex or ChatGPT executable with Chromium's `--remote-debugging-pipe`.
 - Uses a parent-child process pipe rather than exposing a remote-debugging TCP port.
 - Stores the separate profile in `~/Library/Application Support/Codex Theme`.
-- Injects CSS and UI helpers into Codex pages as they are created or refreshed.
+- Attaches once to each Codex page and installs a versioned, single-instance UI runtime.
+- Keeps animation nodes alive across activity fades and updates DOM only when state actually changes.
 - Reads usage from the app's own `/wham/usage` response and caches the latest result locally for up to six hours.
 - Leaves `/Applications/ChatGPT.app`, `/Applications/Codex.app`, and their `app.asar` files untouched.
+
+## Development
+
+The maintainable source lives under `src/host` and `src/page`. The checked-in
+`codex-theme.mjs` is a generated standalone bundle so normal installation does not require npm
+or anything from `node_modules`.
+
+```sh
+npm install
+npm run build
+npm test
+npm run check
+```
+
+Run `npm run build` after changing anything under `src`. `npm run check` fails when the committed
+bundle does not exactly match the source, then performs the syntax and dry-run checks used by the
+installer workflow.
 
 ## Troubleshooting
 
