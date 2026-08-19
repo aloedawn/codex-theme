@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 INSTALL_ROOT="${CODEX_THEME_INSTALL_DIR:-${HOME}/Applications/Codex Theme}"
-APP_SOURCE="${SCRIPT_DIR}/Codex.app"
+APP_SOURCE="${SCRIPT_DIR}/Codex.app.noindex"
 APP_DESTINATION="${INSTALL_ROOT}/Codex.app"
 LAUNCHER_SOURCE="${SCRIPT_DIR}/CodexLauncher.swift"
 LAUNCHER_DESTINATION="${APP_DESTINATION}/Contents/MacOS/CodexTheme"

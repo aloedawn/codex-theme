@@ -5,6 +5,8 @@ export function createThemeCss(imageDataUrl) {
   --codex-chat-input: rgb(255 255 255 / 86%);
   --codex-chat-dropdown: rgb(255 255 255 / 94%);
   --codex-chat-code: rgb(246 248 248 / 90%);
+  --codex-chat-bottom-scrim: rgb(250 251 250 / 96%);
+  --codex-chat-bottom-scrim-height: 10rem;
 }
 
 :root:is(.dark, .electron-dark) {
@@ -12,10 +14,22 @@ export function createThemeCss(imageDataUrl) {
   --codex-chat-input: rgb(28 34 36 / 88%);
   --codex-chat-dropdown: rgb(24 29 31 / 94%);
   --codex-chat-code: rgb(16 21 23 / 92%);
+  --codex-chat-bottom-scrim: rgb(24 29 31 / 96%);
 }
 
-[data-app-shell-main-surface],
-[class*="_MainContentSurface_"] {
+:is([data-app-shell-main-surface], [class*="_MainContentSurface_"]) {
+  /* Current ChatGPT/Codex surface tokens. */
+  --color-background-primary-soft: var(--codex-chat-input) !important;
+  --color-background-secondary-soft-alpha: var(--codex-chat-code) !important;
+  --color-codex-editor-inline-code-background: var(--codex-chat-code) !important;
+  --color-surface-elevated: var(--codex-chat-dropdown) !important;
+  --color-surface-elevated-secondary: var(--codex-chat-input) !important;
+  --color-surface-secondary: var(--codex-chat-secondary) !important;
+
+  /* Compatibility tokens retained for older app builds and editor surfaces. */
+  --vscode-dropdown-background: var(--codex-chat-dropdown) !important;
+  --vscode-input-background: var(--codex-chat-input) !important;
+  --vscode-textCodeBlock-background: var(--codex-chat-code) !important;
   --color-token-main-surface-primary: transparent !important;
   --color-token-bg-primary: transparent !important;
   --color-token-bg-secondary: var(--codex-chat-secondary) !important;
@@ -24,21 +38,57 @@ export function createThemeCss(imageDataUrl) {
   --color-token-text-code-block-background: var(--codex-chat-code) !important;
 
   background-color: transparent !important;
+}
+
+/*
+ * The current app can keep more than one MainContentSurface in the document
+ * while a conversation switches layouts. The runtime marks the one visible,
+ * full-size surface so the wallpaper and dimming layer are painted only once.
+ */
+[data-codex-theme-wallpaper-root="true"] {
   background-image:
+    linear-gradient(
+      to top,
+      var(--codex-chat-bottom-scrim) 0%,
+      var(--codex-chat-bottom-scrim) 48%,
+      transparent 100%
+    ),
     linear-gradient(rgb(0 0 0 / 60%), rgb(0 0 0 / 60%)),
     url(${JSON.stringify(imageDataUrl)}) !important;
-  background-position: center center !important;
+  background-clip: border-box !important;
+  background-origin: border-box !important;
+  background-position: center bottom, center center, center center !important;
   background-repeat: no-repeat !important;
-  background-size: cover !important;
+  background-size: 100% var(--codex-chat-bottom-scrim-height), cover, cover !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
   position: relative !important;
   isolation: isolate;
+  border-inline-start-color: transparent !important;
+  outline: 0 !important;
 }
 
-:where(a, [role="menuitem"])[href*="pro_variant=2x"][href*="#pricing"],
-[role="menuitem"]:has(a[href*="pro_variant=2x"][href*="#pricing"]) {
-  display: none !important;
+/*
+ * The app's native composer fade is sized by an inner content wrapper. When a
+ * top-right panel is open that wrapper can stop before the right edge, leaving
+ * a hard vertical cut. The wallpaper root now owns the same fade full-width;
+ * keep the native node for layout but remove only its cropped paint.
+ */
+[data-codex-theme-wallpaper-root="true"]
+  .pointer-events-none.absolute.inset-x-0.bottom-0.z-0.h-full.bg-gradient-to-t.from-surface.via-surface {
+  background-image: none !important;
+}
+
+/* Keep the native split width, but remove the bright one-pixel seam. */
+.app-shell-left-panel {
+  border-inline-end-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.app-shell-left-panel::after {
+  border-color: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
 }
 
 #codex-theme-usage-panel {
@@ -46,9 +96,9 @@ export function createThemeCss(imageDataUrl) {
   width: 100%;
   flex: none;
   margin: 0;
-  padding: 9px 14px 8px;
-  border-top: 1px solid rgb(127 127 127 / 18%);
-  color: var(--color-token-description-foreground);
+  padding: 9px var(--padding-row-x, 14px) 8px;
+  border-top: 0.5px solid var(--color-border, rgb(127 127 127 / 18%));
+  color: var(--color-text-secondary, var(--color-token-description-foreground));
 }
 
 #codex-theme-usage-panel .codex-theme-usage-row {
@@ -155,11 +205,14 @@ export function createThemeCss(imageDataUrl) {
 .codex-theme-rainbow-canvas {
   position: absolute;
   z-index: 20;
-  inset: -3px;
-  width: calc(100% + 6px);
-  height: calc(100% + 6px);
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--codex-theme-composer-radius, inherit);
+  clip-path: inset(0 round var(--codex-theme-composer-radius, 25px));
   pointer-events: none;
   contain: strict;
+  mix-blend-mode: screen;
   opacity: 0;
   transform: translateZ(0);
   backface-visibility: hidden;
@@ -168,7 +221,7 @@ export function createThemeCss(imageDataUrl) {
 
 [data-codex-theme-rainbow-active="true"]
   > .codex-theme-rainbow-canvas[data-ready="true"] {
-  opacity: 1;
+  opacity: 0.68;
 }
 
 .codex-theme-thumb-fire-layer {
@@ -213,7 +266,7 @@ export function createThemeCss(imageDataUrl) {
 }
 
 .codex-theme-server-signal[data-bars="0"] {
-  color: var(--color-token-description-foreground);
+  color: var(--color-text-secondary, var(--color-token-description-foreground));
   opacity: 0.48;
 }
 

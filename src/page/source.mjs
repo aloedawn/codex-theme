@@ -1,7 +1,7 @@
 import { installPageRuntime } from "./runtime.mjs";
 import { createThemeCss } from "./styles.mjs";
 
-export const PAGE_RUNTIME_VERSION = 2;
+export const PAGE_RUNTIME_VERSION = 14;
 
 export function createPageSource(imageDataUrl, fireDataUrl, { rainbowPreview = false } = {}) {
   const config = {

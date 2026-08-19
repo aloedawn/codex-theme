@@ -531,6 +531,7 @@ function installPageRuntime(initialConfig) {
     const USAGE_CACHE_KEY = "codex-theme-usage-cache";
     const USAGE_REFRESH_MS = 60 * 1e3;
     const ACTIVITY_REFRESH_MS = 500;
+    const CHAT_TURN_DIFF_REFRESH_MS = 1e3;
     const RAINBOW_FRAME_INTERVAL_MS = 1e3 / 30;
     const RAINBOW_ACTIVE_GRACE_MS = Number(startingConfig?.timings?.rainbowGraceMs) || 900;
     const USAGE_ACTIVITY_GRACE_MS = Number(startingConfig?.timings?.usageGraceMs) || 1200;
@@ -549,6 +550,8 @@ function installPageRuntime(initialConfig) {
       "[data-app-action-sidebar-project-row]",
       "[data-app-shell-main-surface]",
       '[class*="_MainContentSurface_"]',
+      "[data-composer-surface-variant]",
+      "[data-codex-composer]",
       "textarea",
       '[contenteditable="true"][role="textbox"]',
       '[contenteditable="true"][data-placeholder]'
@@ -560,6 +563,13 @@ function installPageRuntime(initialConfig) {
     let observer = null;
     let activityTimer = 0;
     let usageTimer = 0;
+    let chatTurnDiffTimer = 0;
+    let nativeTurnDiffRuntime = null;
+    let nativeTurnDiffRuntimePromise = null;
+    let nativeTurnDiffRenderInFlight = false;
+    let nativeTurnDiffRenderRequested = false;
+    let nativeTurnDiffLastError = null;
+    const nativeTurnDiffRoots = /* @__PURE__ */ new Map();
     let structureFrame = 0;
     let activityFrame = 0;
     let usageFetchInFlight = null;
@@ -570,10 +580,8 @@ function installPageRuntime(initialConfig) {
     let composerResizeObserver = null;
     let composerAnimationFrame = 0;
     let composerLastDrawTimestamp = -Infinity;
-    let composerMetricsKey = "";
     let composerGeometryKey = "";
     let composerSegments = [];
-    let composerRadius = 22;
     let composerActiveUntil = 0;
     let composerActive = false;
     let fireSurface = null;
@@ -601,7 +609,11 @@ function installPageRuntime(initialConfig) {
       ignoredObserverCallbacks: 0,
       stateUpdates: 0,
       composerCanvasCreates: 0,
-      fireLayerCreates: 0
+      fireLayerCreates: 0,
+      nativeTurnDiffLoads: 0,
+      nativeTurnDiffLoadErrors: 0,
+      nativeTurnDiffRenders: 0,
+      nativeTurnDiffRenderErrors: 0
     };
     loadCachedUsage();
     const runtime2 = {
@@ -792,20 +804,33 @@ function installPageRuntime(initialConfig) {
         remainingPercent: Math.min(100, Math.max(0, usage.remainingPercent))
       };
     }
-    function findProfileContext() {
+    function findSidebarFooterContext() {
       const panel = document.querySelector(".app-shell-left-panel");
       if (!(panel instanceof HTMLElement)) return null;
       const scroll = panel.querySelector("[data-app-action-sidebar-scroll]");
-      const profileButtons = Array.from(panel.querySelectorAll("button.sidebar-item")).filter((button) => !scroll?.contains(button) && isVisible(button)).sort((left, right) => right.getBoundingClientRect().bottom - left.getBoundingClientRect().bottom);
+      if (!(scroll instanceof HTMLElement)) return null;
+      const profileButtons = Array.from(panel.querySelectorAll("button.sidebar-item")).filter((button) => !scroll.contains(button) && isVisible(button)).sort((left, right) => right.getBoundingClientRect().bottom - left.getBoundingClientRect().bottom);
       const profileButton = profileButtons[0];
       if (!(profileButton instanceof HTMLButtonElement)) return null;
       const footerRow = profileButton.closest(".h-toolbar");
-      if (!(footerRow instanceof HTMLElement)) return null;
+      if (!(footerRow instanceof HTMLElement) || !panel.contains(footerRow) || !isVisible(footerRow)) {
+        return null;
+      }
       return { footerRow, panel, profileButton, scroll };
     }
+    function usagePanelIsAllowed() {
+      return !/^\/settings(?:\/|$)/.test(location.pathname);
+    }
     function renderUsagePanel() {
-      const context = findProfileContext();
-      if (context == null) return;
+      if (!usagePanelIsAllowed()) {
+        document.getElementById(USAGE_PANEL_ID)?.remove();
+        return;
+      }
+      const context = findSidebarFooterContext();
+      if (context == null) {
+        document.getElementById(USAGE_PANEL_ID)?.remove();
+        return;
+      }
       const host = context.footerRow.parentElement;
       if (!(host instanceof HTMLElement)) return;
       document.getElementById("codex-theme-usage-badge")?.remove();
@@ -843,6 +868,397 @@ function installPageRuntime(initialConfig) {
       }
       if (panel.title !== formatted.title) panel.title = formatted.title;
       setAttributeIfChanged(panel, "aria-label", formatted.title);
+    }
+    function reactFiberForElement(element) {
+      if (!(element instanceof Element)) return null;
+      for (const key of Object.getOwnPropertyNames(element)) {
+        if (key.startsWith("__reactFiber$")) return element[key] ?? null;
+        if (key.startsWith("__reactContainer$")) {
+          return element[key]?.current ?? element[key] ?? null;
+        }
+      }
+      return null;
+    }
+    function currentReactFiberRoot() {
+      const candidates = [
+        ...document.querySelectorAll(
+          '[data-app-shell-main-surface], [class*="_MainContentSurface_"]'
+        ),
+        document.body
+      ];
+      for (const candidate of candidates) {
+        let fiber = reactFiberForElement(candidate);
+        if (fiber == null) continue;
+        while (fiber.return != null) fiber = fiber.return;
+        return fiber.current ?? fiber;
+      }
+      return null;
+    }
+    function hashText(value) {
+      let hash = 2166136261;
+      for (let index = 0; index < value.length; index += 1) {
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0).toString(36);
+    }
+    function nearestTurnDiffHost(fiber) {
+      for (let current = fiber?.return; current != null; current = current.return) {
+        if (current.stateNode instanceof HTMLElement && current.stateNode.closest(
+          '[data-app-shell-main-surface], [class*="_MainContentSurface_"]'
+        ) != null) {
+          return current.stateNode;
+        }
+      }
+      return null;
+    }
+    function turnDiffItemsFromProps(props) {
+      if (props == null || typeof props !== "object") return [];
+      const candidates = [
+        props.item,
+        props.unifiedDiffItem,
+        ...Array.isArray(props.items) ? props.items : [],
+        ...Array.isArray(props.turn?.items) ? props.turn.items : [],
+        ...Array.isArray(props.turnState?.items) ? props.turnState.items : [],
+        ...Array.isArray(props.mcpTurn?.items) ? props.mcpTurn.items : []
+      ];
+      const items = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const item of candidates) {
+        if (item == null || typeof item !== "object" || item.type !== "turn-diff" || typeof item.unifiedDiff !== "string" || item.unifiedDiff.length === 0 || seen.has(item)) {
+          continue;
+        }
+        seen.add(item);
+        items.push(item);
+      }
+      return items;
+    }
+    function fiberProps(fiber) {
+      const props = fiber?.memoizedProps ?? fiber?.pendingProps;
+      return props != null && typeof props === "object" ? props : null;
+    }
+    function firstDefined(current, next) {
+      return current == null && next != null ? next : current;
+    }
+    function turnDiffContext(fiber, initialProps, item) {
+      let conversationDetailLevel = initialProps?.conversationDetailLevel ?? null;
+      let conversationId = initialProps?.conversationId ?? initialProps?.turn?.conversationId ?? initialProps?.turnState?.conversationId ?? null;
+      let cwd = initialProps?.cwd ?? item.cwd ?? initialProps?.turn?.cwd ?? initialProps?.turnState?.cwd ?? null;
+      let hostId = initialProps?.hostId ?? initialProps?.turn?.hostId ?? initialProps?.turnState?.hostId ?? null;
+      let turnId = initialProps?.turnId ?? initialProps?.turn?.id ?? initialProps?.turnState?.turnId ?? null;
+      for (let current = fiber?.return; current != null; current = current.return) {
+        const props = fiberProps(current);
+        if (props == null) continue;
+        conversationDetailLevel = firstDefined(
+          conversationDetailLevel,
+          props.conversationDetailLevel
+        );
+        conversationId = firstDefined(
+          conversationId,
+          props.conversationId ?? props.turn?.conversationId ?? props.turnState?.conversationId
+        );
+        cwd = firstDefined(cwd, props.cwd ?? props.turn?.cwd ?? props.turnState?.cwd);
+        hostId = firstDefined(hostId, props.hostId ?? props.turn?.hostId ?? props.turnState?.hostId);
+        turnId = firstDefined(turnId, props.turnId ?? props.turn?.id ?? props.turnState?.turnId);
+      }
+      return { conversationDetailLevel, conversationId, cwd, hostId, turnId };
+    }
+    function reactProviderFibers(fiber) {
+      const providers = [];
+      for (let current = fiber?.return; current != null; current = current.return) {
+        if (current.tag !== 10) continue;
+        const providerType = current.elementType ?? current.type;
+        if (providerType == null) continue;
+        providers.push(current);
+      }
+      return providers;
+    }
+    function chatTurnDiffHost(fiber, context) {
+      const nearestHost = nearestTurnDiffHost(fiber);
+      if (!(nearestHost instanceof HTMLElement)) return null;
+      const contentSearchTurn = nearestHost.closest("[data-content-search-turn-key]");
+      if (contentSearchTurn instanceof HTMLElement) {
+        const contentTurnKey = contentSearchTurn.getAttribute("data-content-search-turn-key");
+        if (context.turnId == null || contentTurnKey === context.turnId) {
+          return contentSearchTurn;
+        }
+      }
+      const chatGptTurn = nearestHost.closest("[data-chatgpt-conversation-turn]");
+      if (chatGptTurn instanceof HTMLElement) return chatGptTurn;
+      return context.conversationDetailLevel === "STEPS_PROSE" ? nearestHost : null;
+    }
+    function escapeRegExp(value) {
+      return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+    function resourceAssetUrl(pattern) {
+      try {
+        const entries = performance.getEntriesByType?.("resource") ?? [];
+        for (const entry of entries) {
+          if (typeof entry?.name === "string" && pattern.test(entry.name)) return entry.name;
+        }
+      } catch {
+      }
+      return null;
+    }
+    function linkedAssetUrl(pattern) {
+      try {
+        for (const link of document.querySelectorAll("link[href]")) {
+          const href = typeof link.href === "string" && link.href ? link.href : new URL(link.getAttribute("href"), document.baseURI).href;
+          if (pattern.test(href)) return href;
+        }
+      } catch {
+      }
+      return null;
+    }
+    async function nativeTurnDiffAssetUrls() {
+      const appInitialPattern = /\/app-initial-[^/]+\.js(?:[?#]|$)/;
+      const nativeComponentPattern = /\/subagent-activity-chip-group-[^/]+\.js(?:[?#]|$)/;
+      const turnModulePattern = /\/local-conversation-turn-[^/]+\.js(?:[?#]|$)/;
+      const appInitialUrl = resourceAssetUrl(appInitialPattern) ?? linkedAssetUrl(appInitialPattern);
+      let nativeComponentUrl = resourceAssetUrl(nativeComponentPattern) ?? linkedAssetUrl(nativeComponentPattern);
+      if (nativeComponentUrl == null) {
+        const turnModuleUrl = resourceAssetUrl(turnModulePattern) ?? linkedAssetUrl(turnModulePattern);
+        if (turnModuleUrl != null) {
+          const turnModuleSource = await fetch(turnModuleUrl).then((response) => response.text());
+          const match = turnModuleSource.match(
+            /["']\.\/((?:subagent-activity-chip-group)-[^"']+\.js)["']/
+          );
+          if (match?.[1]) nativeComponentUrl = new URL(match[1], turnModuleUrl).href;
+        }
+      }
+      if (appInitialUrl == null || nativeComponentUrl == null) {
+        throw new Error("Codex native turn-diff assets were not found");
+      }
+      return { appInitialUrl, nativeComponentUrl };
+    }
+    function reactDomFactoryExportName(source) {
+      const markerIndex = source.indexOf(".createRoot=function");
+      if (markerIndex < 0) return null;
+      const wrapperMatch = source.slice(markerIndex, markerIndex + 5e3).match(
+        /\}\)\),([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\(\(/
+      );
+      const wrapperName = wrapperMatch?.[1];
+      if (!wrapperName) return null;
+      const exportBlockIndex = source.lastIndexOf("export{");
+      if (exportBlockIndex < 0) return null;
+      const aliasMatch = source.slice(exportBlockIndex).match(
+        new RegExp(`(?:^|,)${escapeRegExp(wrapperName)} as ([A-Za-z_$][\\w$]*)`)
+      );
+      return aliasMatch?.[1] ?? null;
+    }
+    function nativeTurnDiffComponent(moduleNamespace) {
+      return Object.values(moduleNamespace).find((value) => {
+        if (typeof value !== "function") return false;
+        const source = Function.prototype.toString.call(value);
+        return source.includes("inProgressDiffSummary") && source.includes("showRevertButton") && source.includes("deferOffscreenRendering");
+      }) ?? null;
+    }
+    async function loadNativeTurnDiffRuntime() {
+      const testLoader = globalThis.__codexThemeNativeTurnDiffLoader;
+      if (typeof testLoader === "function") {
+        const loaded = await testLoader();
+        if (typeof loaded?.component !== "function" || typeof loaded?.createRoot !== "function") {
+          throw new Error("The native turn-diff test loader returned an invalid runtime");
+        }
+        return loaded;
+      }
+      const { appInitialUrl, nativeComponentUrl } = await nativeTurnDiffAssetUrls();
+      const [appInitialModule, componentModule, appInitialSource] = await Promise.all([
+        import(appInitialUrl),
+        import(nativeComponentUrl),
+        fetch(appInitialUrl).then((response) => response.text())
+      ]);
+      const component = nativeTurnDiffComponent(componentModule);
+      if (component == null) throw new Error("Codex native turn-diff component was not found");
+      const factoryExportName = reactDomFactoryExportName(appInitialSource);
+      const reactDomFactory = factoryExportName == null ? appInitialModule.mNt : appInitialModule[factoryExportName];
+      const reactDom = typeof reactDomFactory === "function" ? reactDomFactory() : null;
+      if (typeof reactDom?.createRoot !== "function") {
+        throw new Error("Codex ReactDOM createRoot runtime was not found");
+      }
+      return {
+        component,
+        createRoot: reactDom.createRoot,
+        appInitialUrl,
+        nativeComponentUrl
+      };
+    }
+    async function ensureNativeTurnDiffRuntime() {
+      if (nativeTurnDiffRuntime != null) return nativeTurnDiffRuntime;
+      if (nativeTurnDiffRuntimePromise == null) {
+        nativeTurnDiffRuntimePromise = loadNativeTurnDiffRuntime().then((loaded) => {
+          nativeTurnDiffRuntime = loaded;
+          nativeTurnDiffLastError = null;
+          diagnostics.nativeTurnDiffLoads += 1;
+          return loaded;
+        }).catch((error) => {
+          nativeTurnDiffLastError = String(error?.stack || error);
+          diagnostics.nativeTurnDiffLoadErrors += 1;
+          nativeTurnDiffRuntimePromise = null;
+          throw error;
+        });
+      }
+      return nativeTurnDiffRuntimePromise;
+    }
+    function reactElement(type, props) {
+      return {
+        $$typeof: /* @__PURE__ */ Symbol.for("react.transitional.element"),
+        type,
+        key: null,
+        props,
+        _owner: null
+      };
+    }
+    function nativeTurnDiffElement(runtime22, entry) {
+      let element = reactElement(runtime22.component, {
+        isInProgress: false,
+        item: entry.item,
+        deferOffscreenRendering: false,
+        conversationId: entry.context.conversationId,
+        cwd: entry.context.cwd,
+        hostId: entry.context.hostId
+      });
+      for (const provider of entry.providers) {
+        const providerType = provider.elementType ?? provider.type;
+        if (providerType == null) continue;
+        element = reactElement(providerType, {
+          value: fiberProps(provider)?.value,
+          children: element
+        });
+      }
+      return element;
+    }
+    function removeNativeTurnDiffRoot(key, record = nativeTurnDiffRoots.get(key)) {
+      if (record == null) return;
+      nativeTurnDiffRoots.delete(key);
+      try {
+        record.root.unmount();
+      } catch {
+      }
+      record.container.remove();
+    }
+    function reportNativeTurnDiffRenderError(error) {
+      nativeTurnDiffLastError = String(error?.stack || error);
+      diagnostics.nativeTurnDiffRenderErrors += 1;
+    }
+    function mountNativeTurnDiff(runtime22, entry) {
+      let record = nativeTurnDiffRoots.get(entry.key);
+      if (record != null && (record.host !== entry.host || !record.container.isConnected)) {
+        removeNativeTurnDiffRoot(entry.key, record);
+        record = null;
+      }
+      if (record == null) {
+        const container = markOwned(document.createElement("div"));
+        container.setAttribute("data-codex-theme-native-turn-diff", "true");
+        container.dataset.diffKey = entry.key;
+        entry.host.append(container);
+        const root = runtime22.createRoot(container, {
+          onCaughtError: reportNativeTurnDiffRenderError,
+          onUncaughtError: reportNativeTurnDiffRenderError,
+          onRecoverableError: reportNativeTurnDiffRenderError
+        });
+        record = { container, host: entry.host, root };
+        nativeTurnDiffRoots.set(entry.key, record);
+      }
+      try {
+        record.root.render(nativeTurnDiffElement(runtime22, entry));
+        diagnostics.nativeTurnDiffRenders += 1;
+      } catch (error) {
+        reportNativeTurnDiffRenderError(error);
+        removeNativeTurnDiffRoot(entry.key, record);
+      }
+    }
+    function discoverNativeTurnDiffs(nativeComponent = null) {
+      const root = currentReactFiberRoot();
+      if (root == null) return /* @__PURE__ */ new Map();
+      const discovered = /* @__PURE__ */ new Map();
+      const stack = [root];
+      const visited = /* @__PURE__ */ new Set();
+      while (stack.length > 0 && visited.size < 1e5) {
+        const fiber = stack.pop();
+        if (fiber == null || visited.has(fiber)) continue;
+        visited.add(fiber);
+        const props = fiberProps(fiber);
+        const items = turnDiffItemsFromProps(props);
+        if (items.length > 0) {
+          for (const item of items) {
+            const context = turnDiffContext(fiber, props, item);
+            const host = chatTurnDiffHost(fiber, context);
+            if (!(host instanceof HTMLElement)) continue;
+            if (context.conversationId == null) continue;
+            const identity = item.id || context.turnId || hashText(`${context.conversationId}
+${item.unifiedDiff}`);
+            const key = `${context.conversationId}:${identity}`;
+            const providers = reactProviderFibers(fiber);
+            const nativeAlreadyRendered = nativeComponent != null && (fiber.type === nativeComponent || fiber.elementType === nativeComponent);
+            const score = providers.length + (context.hostId != null ? 100 : 0) + (context.turnId != null ? 100 : 0) + (context.conversationDetailLevel === "STEPS_PROSE" ? 50 : 0) + (Array.isArray(item.patchBatches) ? 10 : 0);
+            const previous = discovered.get(key);
+            if (previous == null || score > previous.score) {
+              discovered.set(key, {
+                context,
+                fiber,
+                host,
+                item,
+                key,
+                nativeAlreadyRendered: nativeAlreadyRendered || previous?.nativeAlreadyRendered,
+                providers,
+                score
+              });
+            } else if (nativeAlreadyRendered) {
+              previous.nativeAlreadyRendered = true;
+            }
+          }
+        }
+        if (fiber.sibling != null) stack.push(fiber.sibling);
+        if (fiber.child != null) stack.push(fiber.child);
+      }
+      return discovered;
+    }
+    async function renderChatModeTurnDiffs() {
+      if (disposed || !document.documentElement) return;
+      for (const legacyCard of document.querySelectorAll(".codex-theme-chat-turn-diff")) {
+        legacyCard.remove();
+      }
+      let discovered = discoverNativeTurnDiffs(nativeTurnDiffRuntime?.component ?? null);
+      for (const [key, record] of nativeTurnDiffRoots) {
+        const entry = discovered.get(key);
+        if (entry == null || entry.host !== record.host) removeNativeTurnDiffRoot(key, record);
+      }
+      if (discovered.size === 0) return;
+      let runtime22;
+      try {
+        runtime22 = await ensureNativeTurnDiffRuntime();
+      } catch {
+        return;
+      }
+      if (disposed) return;
+      discovered = discoverNativeTurnDiffs(runtime22.component);
+      for (const [key, record] of nativeTurnDiffRoots) {
+        const entry = discovered.get(key);
+        if (entry == null || entry.host !== record.host || entry.nativeAlreadyRendered) {
+          removeNativeTurnDiffRoot(key, record);
+        }
+      }
+      for (const entry of discovered.values()) {
+        if (!entry.nativeAlreadyRendered && entry.host.isConnected) {
+          mountNativeTurnDiff(runtime22, entry);
+        }
+      }
+    }
+    function scheduleChatTurnDiffRender() {
+      if (disposed) return;
+      if (nativeTurnDiffRenderInFlight) {
+        nativeTurnDiffRenderRequested = true;
+        return;
+      }
+      nativeTurnDiffRenderInFlight = true;
+      void renderChatModeTurnDiffs().catch(reportNativeTurnDiffRenderError).finally(() => {
+        nativeTurnDiffRenderInFlight = false;
+        if (nativeTurnDiffRenderRequested && !disposed) {
+          nativeTurnDiffRenderRequested = false;
+          scheduleChatTurnDiffRender();
+        }
+      });
     }
     function serverSignalBars(latency) {
       if (!Number.isFinite(latency)) return 0;
@@ -945,7 +1361,7 @@ function installPageRuntime(initialConfig) {
     }
     function findComposerSurface() {
       const editors = Array.from(document.querySelectorAll(
-        'textarea, [contenteditable="true"][role="textbox"], [contenteditable="true"][data-placeholder]'
+        '[data-codex-composer="true"], textarea, [contenteditable="true"][role="textbox"], [contenteditable="true"][data-placeholder]'
       )).filter((element) => {
         if (!(element instanceof HTMLElement) || !isVisible(element)) return false;
         const rect = element.getBoundingClientRect();
@@ -957,6 +1373,20 @@ function installPageRuntime(initialConfig) {
       });
       const editor = editors[0];
       if (!(editor instanceof HTMLElement)) return null;
+      const layoutRoot = editor.closest(
+        "[data-composer-layout][data-composer-surface-variant]"
+      );
+      if (layoutRoot instanceof HTMLElement && isVisible(layoutRoot)) {
+        for (let surface2 = editor.parentElement; surface2 && layoutRoot.contains(surface2); surface2 = surface2.parentElement) {
+          const rect = surface2.getBoundingClientRect();
+          const radius = Number.parseFloat(getComputedStyle(surface2).borderRadius);
+          if (rect.width >= 320 && rect.height >= 48 && rect.height <= 260 && Number.isFinite(radius) && radius >= 8 && surface2.querySelector("button")) {
+            return surface2;
+          }
+          if (surface2 === layoutRoot) break;
+        }
+        return layoutRoot;
+      }
       if (composerSurface instanceof HTMLElement && composerSurface.isConnected && isVisible(composerSurface) && composerSurface.contains(editor)) {
         return composerSurface;
       }
@@ -1002,10 +1432,8 @@ function installPageRuntime(initialConfig) {
       composerCanvas?.remove();
       composerSurface = nextSurface instanceof HTMLElement ? nextSurface : null;
       composerCanvas = null;
-      composerMetricsKey = "";
       composerGeometryKey = "";
       composerSegments = [];
-      composerRadius = 22;
       composerActive = false;
       composerActiveUntil = 0;
       if (!(composerSurface instanceof HTMLElement)) return;
@@ -1014,49 +1442,17 @@ function installPageRuntime(initialConfig) {
       const canvas = markOwned(document.createElement("canvas"));
       canvas.className = "codex-theme-rainbow-canvas";
       canvas.setAttribute("aria-hidden", "true");
+      canvas.setAttribute("data-effect", "surface-fill");
       composerSurface.appendChild(canvas);
       composerCanvas = canvas;
       diagnostics.composerCanvasCreates += 1;
       if (typeof ResizeObserver === "function") {
         composerResizeObserver = new ResizeObserver(() => {
-          composerMetricsKey = "";
           composerGeometryKey = "";
           if (composerActive) drawRainbowFrame(performance.now());
         });
         composerResizeObserver.observe(composerSurface);
       }
-    }
-    function pointOnRoundedRect(distance, width, height, radius) {
-      const horizontal = Math.max(0, width - radius * 2);
-      const vertical = Math.max(0, height - radius * 2);
-      const arc = Math.PI * radius / 2;
-      const perimeter = horizontal * 2 + vertical * 2 + arc * 4;
-      let cursor = (distance % perimeter + perimeter) % perimeter;
-      if (cursor <= horizontal) return { x: radius + cursor, y: 0 };
-      cursor -= horizontal;
-      if (cursor <= arc) {
-        const angle2 = -Math.PI / 2 + cursor / radius;
-        return { x: width - radius + Math.cos(angle2) * radius, y: radius + Math.sin(angle2) * radius };
-      }
-      cursor -= arc;
-      if (cursor <= vertical) return { x: width, y: radius + cursor };
-      cursor -= vertical;
-      if (cursor <= arc) {
-        const angle2 = cursor / radius;
-        return { x: width - radius + Math.cos(angle2) * radius, y: height - radius + Math.sin(angle2) * radius };
-      }
-      cursor -= arc;
-      if (cursor <= horizontal) return { x: width - radius - cursor, y: height };
-      cursor -= horizontal;
-      if (cursor <= arc) {
-        const angle2 = Math.PI / 2 + cursor / radius;
-        return { x: radius + Math.cos(angle2) * radius, y: height - radius + Math.sin(angle2) * radius };
-      }
-      cursor -= arc;
-      if (cursor <= vertical) return { x: 0, y: height - radius - cursor };
-      cursor -= vertical;
-      const angle = Math.PI + cursor / radius;
-      return { x: radius + Math.cos(angle) * radius, y: radius + Math.sin(angle) * radius };
     }
     function drawRainbowFrame(timestamp) {
       if (!(composerCanvas instanceof HTMLCanvasElement) || !(composerSurface instanceof HTMLElement)) {
@@ -1064,8 +1460,8 @@ function installPageRuntime(initialConfig) {
       }
       const canvasRect = composerCanvas.getBoundingClientRect();
       const surfaceRect = composerSurface.getBoundingClientRect();
-      const cssWidth = canvasRect.width || surfaceRect.width + 6;
-      const cssHeight = canvasRect.height || surfaceRect.height + 6;
+      const cssWidth = canvasRect.width || surfaceRect.width;
+      const cssHeight = canvasRect.height || surfaceRect.height;
       if (cssWidth < 2 || cssHeight < 2) return;
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
       const pixelWidth = Math.round(cssWidth * pixelRatio);
@@ -1078,46 +1474,37 @@ function installPageRuntime(initialConfig) {
       if (context == null) return;
       context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       context.clearRect(0, 0, cssWidth, cssHeight);
-      const inset = 3;
-      const width = Math.max(1, cssWidth - inset * 2);
-      const height = Math.max(1, cssHeight - inset * 2);
       const metricsKey = `${Math.round(cssWidth * 10)}x${Math.round(cssHeight * 10)}`;
-      if (composerMetricsKey !== metricsKey) {
-        const surfaceRadius = Number.parseFloat(getComputedStyle(composerSurface).borderRadius);
-        composerRadius = Math.min(
-          Math.max(Number.isFinite(surfaceRadius) && surfaceRadius >= 8 ? surfaceRadius : 22, 8),
-          width / 2,
-          height / 2
-        );
-        composerMetricsKey = metricsKey;
-      }
-      const radius = composerRadius;
-      const horizontal = Math.max(0, width - radius * 2);
-      const vertical = Math.max(0, height - radius * 2);
-      const perimeter = horizontal * 2 + vertical * 2 + Math.PI * radius * 2;
-      const segmentCount = Math.min(720, Math.max(360, Math.ceil(perimeter / 3)));
+      const surfaceStyle = getComputedStyle(composerSurface);
+      const measuredRadius = Number.parseFloat(surfaceStyle.borderTopLeftRadius) || Number.parseFloat(surfaceStyle.borderRadius) || Math.min(25, cssHeight / 2);
+      const clippedRadius = Math.min(
+        Math.max(measuredRadius, 0),
+        cssWidth / 2,
+        cssHeight / 2
+      );
+      setStylePropertyIfChanged(
+        composerCanvas,
+        "--codex-theme-composer-radius",
+        `${clippedRadius}px`
+      );
+      const segmentCount = Math.min(480, Math.max(180, Math.ceil(cssWidth / 3)));
       const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
       const duration = reducedMotion ? 8e3 : 2400;
       const phase = timestamp % duration / duration;
-      const geometryKey = `${metricsKey}:${Math.round(radius * 10)}:${segmentCount}`;
+      const geometryKey = `${metricsKey}:${segmentCount}`;
       if (composerGeometryKey !== geometryKey) {
         composerGeometryKey = geometryKey;
+        const bandWidth = cssWidth / segmentCount;
         composerSegments = Array.from({ length: segmentCount }, (_, index) => ({
-          start: pointOnRoundedRect(perimeter * index / segmentCount, width, height, radius),
-          end: pointOnRoundedRect(perimeter * (index + 1.5) / segmentCount, width, height, radius)
+          x: index * bandWidth,
+          width: bandWidth + 1
         }));
       }
-      context.lineWidth = 2;
-      context.lineCap = "round";
-      context.lineJoin = "round";
       for (let index = 0; index < composerSegments.length; index += 1) {
-        const { start, end } = composerSegments[index];
+        const segment = composerSegments[index];
         const hue = ((index / segmentCount - phase) * 360 + 360) % 360;
-        context.strokeStyle = `hsl(${hue}deg 100% 60%)`;
-        context.beginPath();
-        context.moveTo(start.x + inset, start.y + inset);
-        context.lineTo(end.x + inset, end.y + inset);
-        context.stroke();
+        context.fillStyle = `hsl(${hue}deg 100% 58%)`;
+        context.fillRect(segment.x, 0, segment.width, cssHeight);
       }
       setAttributeIfChanged(composerCanvas, "data-ready", "true");
       setAttributeIfChanged(composerCanvas, "data-pixel-ratio", String(pixelRatio));
@@ -1159,23 +1546,31 @@ function installPageRuntime(initialConfig) {
       else stopComposerAnimation();
     }
     function findMainSurface() {
-      return Array.from(document.querySelectorAll(
-        '[data-app-shell-main-surface], [class*="_MainContentSurface_"]'
-      )).filter((surface) => surface instanceof HTMLElement && isVisible(surface)).sort((left, right) => {
+      const visibleSurfaces = (selector) => Array.from(document.querySelectorAll(selector)).filter((surface) => surface instanceof HTMLElement && isVisible(surface));
+      const currentSurfaces = visibleSurfaces("[data-app-shell-main-surface]");
+      const candidates = currentSurfaces.length > 0 ? currentSurfaces : visibleSurfaces('[class*="_MainContentSurface_"]');
+      return candidates.sort((left, right) => {
         const leftRect = left.getBoundingClientRect();
         const rightRect = right.getBoundingClientRect();
         return rightRect.width * rightRect.height - leftRect.width * leftRect.height;
       })[0] ?? null;
     }
     function setFireSurface(nextSurface) {
-      if (fireSurface === nextSurface && fireSurface?.isConnected) return;
+      if (fireSurface === nextSurface && fireSurface?.isConnected) {
+        setAttributeIfChanged(fireSurface, "data-codex-theme-wallpaper-root", "true");
+        return;
+      }
       fireResizeObserver?.disconnect();
       fireResizeObserver = null;
       fireLayer?.remove();
       fireLayer = null;
       fireImages = [];
+      if (fireSurface instanceof HTMLElement) {
+        removeAttributeIfPresent(fireSurface, "data-codex-theme-wallpaper-root");
+      }
       fireSurface = nextSurface instanceof HTMLElement ? nextSurface : null;
       if (!(fireSurface instanceof HTMLElement)) return;
+      setAttributeIfChanged(fireSurface, "data-codex-theme-wallpaper-root", "true");
       if (typeof ResizeObserver === "function") {
         fireResizeObserver = new ResizeObserver(scheduleFireGeometry);
         fireResizeObserver.observe(fireSurface);
@@ -1474,6 +1869,7 @@ function installPageRuntime(initialConfig) {
       if (nextComposerSurface !== composerSurface) setComposerSurface(nextComposerSurface);
       const nextFireSurface = findMainSurface();
       if (nextFireSurface !== fireSurface) setFireSurface(nextFireSurface);
+      scheduleChatTurnDiffRender();
       scheduleActivity("structure");
     }
     function scheduleStructure() {
@@ -1562,6 +1958,10 @@ function installPageRuntime(initialConfig) {
         if (document.documentElement) installObserver();
         activityTimer = setInterval(scheduleActivity, ACTIVITY_REFRESH_MS);
         usageTimer = setInterval(refreshUsage, USAGE_REFRESH_MS);
+        chatTurnDiffTimer = setInterval(
+          scheduleChatTurnDiffRender,
+          CHAT_TURN_DIFF_REFRESH_MS
+        );
         if (document.readyState === "loading") {
           domReadyHandler = () => {
             if (document.documentElement) {
@@ -1626,6 +2026,7 @@ function installPageRuntime(initialConfig) {
           observer: observer != null,
           activityTimer: activityTimer !== 0,
           usageTimer: usageTimer !== 0,
+          chatTurnDiffTimer: chatTurnDiffTimer !== 0,
           composerAnimationFrame: composerAnimationFrame !== 0,
           fireTimer: fireTimer !== 0
         },
@@ -1634,7 +2035,16 @@ function installPageRuntime(initialConfig) {
           composerCanvases: document.querySelectorAll(".codex-theme-rainbow-canvas").length,
           fireLayers: document.querySelectorAll(".codex-theme-thumb-fire-layer").length,
           fireImages: document.querySelectorAll(".codex-theme-thumb-fire").length,
-          serverSignals: document.querySelectorAll(".codex-theme-server-signal").length
+          serverSignals: document.querySelectorAll(".codex-theme-server-signal").length,
+          chatTurnDiffCards: document.querySelectorAll(
+            '[data-codex-theme-native-turn-diff="true"]'
+          ).length,
+          nativeTurnDiffCards: nativeTurnDiffRoots.size
+        },
+        nativeTurnDiff: {
+          loaded: nativeTurnDiffRuntime != null,
+          loading: nativeTurnDiffRuntimePromise != null && nativeTurnDiffRuntime == null,
+          lastError: nativeTurnDiffLastError
         },
         usage: {
           value: uiState.usage,
@@ -1666,8 +2076,10 @@ function installPageRuntime(initialConfig) {
       observer = null;
       if (activityTimer) clearInterval(activityTimer);
       if (usageTimer) clearInterval(usageTimer);
+      if (chatTurnDiffTimer) clearInterval(chatTurnDiffTimer);
       activityTimer = 0;
       usageTimer = 0;
+      chatTurnDiffTimer = 0;
       if (structureFrame) cancelAnimationFrame(structureFrame);
       if (activityFrame) cancelAnimationFrame(activityFrame);
       if (fireGeometryFrame) cancelAnimationFrame(fireGeometryFrame);
@@ -1682,13 +2094,29 @@ function installPageRuntime(initialConfig) {
       fireResizeObserver = null;
       if (domReadyHandler) document.removeEventListener("DOMContentLoaded", domReadyHandler);
       domReadyHandler = null;
+      for (const [key, record] of nativeTurnDiffRoots) {
+        removeNativeTurnDiffRoot(key, record);
+      }
+      nativeTurnDiffRuntime = null;
+      nativeTurnDiffRuntimePromise = null;
+      nativeTurnDiffRenderInFlight = false;
+      nativeTurnDiffRenderRequested = false;
       if (composerSurface instanceof HTMLElement) {
         removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-composer");
         removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-active");
       }
       composerCanvas?.remove();
       fireLayer?.remove();
+      if (fireSurface instanceof HTMLElement) {
+        removeAttributeIfPresent(fireSurface, "data-codex-theme-wallpaper-root");
+      }
       document.getElementById(USAGE_PANEL_ID)?.remove();
+      for (const card of document.querySelectorAll(".codex-theme-chat-turn-diff")) card.remove();
+      for (const container of document.querySelectorAll(
+        '[data-codex-theme-native-turn-diff="true"]'
+      )) {
+        container.remove();
+      }
       for (const signal of document.querySelectorAll(".codex-theme-server-signal")) signal.remove();
       for (const nativeStatus of document.querySelectorAll(
         '[data-codex-theme-native-server-status="true"]'
@@ -1714,6 +2142,8 @@ function createThemeCss(imageDataUrl) {
   --codex-chat-input: rgb(255 255 255 / 86%);
   --codex-chat-dropdown: rgb(255 255 255 / 94%);
   --codex-chat-code: rgb(246 248 248 / 90%);
+  --codex-chat-bottom-scrim: rgb(250 251 250 / 96%);
+  --codex-chat-bottom-scrim-height: 10rem;
 }
 
 :root:is(.dark, .electron-dark) {
@@ -1721,10 +2151,22 @@ function createThemeCss(imageDataUrl) {
   --codex-chat-input: rgb(28 34 36 / 88%);
   --codex-chat-dropdown: rgb(24 29 31 / 94%);
   --codex-chat-code: rgb(16 21 23 / 92%);
+  --codex-chat-bottom-scrim: rgb(24 29 31 / 96%);
 }
 
-[data-app-shell-main-surface],
-[class*="_MainContentSurface_"] {
+:is([data-app-shell-main-surface], [class*="_MainContentSurface_"]) {
+  /* Current ChatGPT/Codex surface tokens. */
+  --color-background-primary-soft: var(--codex-chat-input) !important;
+  --color-background-secondary-soft-alpha: var(--codex-chat-code) !important;
+  --color-codex-editor-inline-code-background: var(--codex-chat-code) !important;
+  --color-surface-elevated: var(--codex-chat-dropdown) !important;
+  --color-surface-elevated-secondary: var(--codex-chat-input) !important;
+  --color-surface-secondary: var(--codex-chat-secondary) !important;
+
+  /* Compatibility tokens retained for older app builds and editor surfaces. */
+  --vscode-dropdown-background: var(--codex-chat-dropdown) !important;
+  --vscode-input-background: var(--codex-chat-input) !important;
+  --vscode-textCodeBlock-background: var(--codex-chat-code) !important;
   --color-token-main-surface-primary: transparent !important;
   --color-token-bg-primary: transparent !important;
   --color-token-bg-secondary: var(--codex-chat-secondary) !important;
@@ -1733,21 +2175,57 @@ function createThemeCss(imageDataUrl) {
   --color-token-text-code-block-background: var(--codex-chat-code) !important;
 
   background-color: transparent !important;
+}
+
+/*
+ * The current app can keep more than one MainContentSurface in the document
+ * while a conversation switches layouts. The runtime marks the one visible,
+ * full-size surface so the wallpaper and dimming layer are painted only once.
+ */
+[data-codex-theme-wallpaper-root="true"] {
   background-image:
+    linear-gradient(
+      to top,
+      var(--codex-chat-bottom-scrim) 0%,
+      var(--codex-chat-bottom-scrim) 48%,
+      transparent 100%
+    ),
     linear-gradient(rgb(0 0 0 / 60%), rgb(0 0 0 / 60%)),
     url(${JSON.stringify(imageDataUrl)}) !important;
-  background-position: center center !important;
+  background-clip: border-box !important;
+  background-origin: border-box !important;
+  background-position: center bottom, center center, center center !important;
   background-repeat: no-repeat !important;
-  background-size: cover !important;
+  background-size: 100% var(--codex-chat-bottom-scrim-height), cover, cover !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
   position: relative !important;
   isolation: isolate;
+  border-inline-start-color: transparent !important;
+  outline: 0 !important;
 }
 
-:where(a, [role="menuitem"])[href*="pro_variant=2x"][href*="#pricing"],
-[role="menuitem"]:has(a[href*="pro_variant=2x"][href*="#pricing"]) {
-  display: none !important;
+/*
+ * The app's native composer fade is sized by an inner content wrapper. When a
+ * top-right panel is open that wrapper can stop before the right edge, leaving
+ * a hard vertical cut. The wallpaper root now owns the same fade full-width;
+ * keep the native node for layout but remove only its cropped paint.
+ */
+[data-codex-theme-wallpaper-root="true"]
+  .pointer-events-none.absolute.inset-x-0.bottom-0.z-0.h-full.bg-gradient-to-t.from-surface.via-surface {
+  background-image: none !important;
+}
+
+/* Keep the native split width, but remove the bright one-pixel seam. */
+.app-shell-left-panel {
+  border-inline-end-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.app-shell-left-panel::after {
+  border-color: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
 }
 
 #codex-theme-usage-panel {
@@ -1755,9 +2233,9 @@ function createThemeCss(imageDataUrl) {
   width: 100%;
   flex: none;
   margin: 0;
-  padding: 9px 14px 8px;
-  border-top: 1px solid rgb(127 127 127 / 18%);
-  color: var(--color-token-description-foreground);
+  padding: 9px var(--padding-row-x, 14px) 8px;
+  border-top: 0.5px solid var(--color-border, rgb(127 127 127 / 18%));
+  color: var(--color-text-secondary, var(--color-token-description-foreground));
 }
 
 #codex-theme-usage-panel .codex-theme-usage-row {
@@ -1864,11 +2342,14 @@ function createThemeCss(imageDataUrl) {
 .codex-theme-rainbow-canvas {
   position: absolute;
   z-index: 20;
-  inset: -3px;
-  width: calc(100% + 6px);
-  height: calc(100% + 6px);
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--codex-theme-composer-radius, inherit);
+  clip-path: inset(0 round var(--codex-theme-composer-radius, 25px));
   pointer-events: none;
   contain: strict;
+  mix-blend-mode: screen;
   opacity: 0;
   transform: translateZ(0);
   backface-visibility: hidden;
@@ -1877,7 +2358,7 @@ function createThemeCss(imageDataUrl) {
 
 [data-codex-theme-rainbow-active="true"]
   > .codex-theme-rainbow-canvas[data-ready="true"] {
-  opacity: 1;
+  opacity: 0.68;
 }
 
 .codex-theme-thumb-fire-layer {
@@ -1922,7 +2403,7 @@ function createThemeCss(imageDataUrl) {
 }
 
 .codex-theme-server-signal[data-bars="0"] {
-  color: var(--color-token-description-foreground);
+  color: var(--color-text-secondary, var(--color-token-description-foreground));
   opacity: 0.48;
 }
 
@@ -1956,7 +2437,7 @@ function createThemeCss(imageDataUrl) {
 }
 
 // src/page/source.mjs
-var PAGE_RUNTIME_VERSION = 2;
+var PAGE_RUNTIME_VERSION = 14;
 function createPageSource(imageDataUrl, fireDataUrl, { rainbowPreview = false } = {}) {
   const config = {
     version: PAGE_RUNTIME_VERSION,

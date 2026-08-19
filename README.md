@@ -1,28 +1,43 @@
 # Codex Theme
 
-An unofficial macOS launcher that gives the Codex desktop app a custom photo background, animated activity effects, compact usage information, and SSH connection indicators—without modifying the official app bundle or `app.asar`.
+An unofficial macOS launcher that gives the unified Codex/ChatGPT desktop app a custom photo background, animated activity effects, compact usage information, native file-review cards in ChatGPT Work mode, and SSH connection indicators—without modifying the official app bundle or `app.asar`.
 
 The included [`image.jpg`](image.jpg) and [`fire.gif`](fire.gif) reproduce the author's current setup.
 
 > [!WARNING]
 > This relies on the current Codex desktop UI structure. A major Codex update may require a theme update. It uses a separate app profile, so you may need to sign in again on first launch.
 
-## What it changes
+## Custom features
 
-- Shows `image.jpg` only behind the chat surface with a 60% dark overlay.
-- Keeps the native translucent sidebar material.
-- Displays a compact Japanese usage strip at the bottom of the sidebar.
-- Animates the current composer border while that task is running.
-- Animates the usage bar while any visible or collapsed project has an active task.
+### Chat surface
+
+- Shows `image.jpg` behind the active chat surface with a 60% dark overlay while retaining the native translucent sidebar material.
+- Paints the wallpaper and bottom composer fade from one full-size surface, avoiding bright seams at the sidebar edge and hard gradient cuts when the top-right panel is open.
+- Applies translucent colors to the current input, dropdown, secondary, and code surfaces while preserving the app's native layout and controls.
+
+### ChatGPT Work file-review cards
+
+- Restores the app's own Codex file-change card at the end of every completed file-modifying response in ChatGPT Work conversations.
+- Loads the native card component and its live app providers rather than recreating the card, preserving the original typography, spacing, file grouping, diff counts, expansion control, **Undo**, and **Review** actions.
+- Leaves cards that Codex mode already renders untouched, so native cards are never duplicated.
+
+### Task activity
+
+- Fills the complete current rounded composer surface with an animated rainbow while that task is running, without changing its corner radius or adding scrollbars.
+- Animates the full-width usage bar while any visible or collapsed project has an active task.
 - Shows the included transparent fire GIF above both thumbs for the active task. Each task keeps its own timer and grows the flames for up to five minutes.
 - Keeps flames clipped to the chat surface and below chat text.
+
+### Sidebar information
+
+- Displays remaining usage and the reset date in a compact Japanese strip directly above the current profile footer.
+- Keeps the custom usage strip out of the Settings route and separate Settings window.
 - Replaces matching SSH host status dots with four cellular-style latency bars:
   - 4 bars: 40 ms or less
   - 3 bars: 100 ms or less
   - 2 bars: 250 ms or less
   - 1 bar: slower than 250 ms
   - 0 bars: unavailable
-- Hides the in-app upgrade prompt while leaving the profile footer intact.
 
 ## Requirements
 
@@ -112,6 +127,7 @@ The launcher performs a TCP connection timing check against each configured host
 - Uses a parent-child process pipe rather than exposing a remote-debugging TCP port.
 - Stores the separate profile in `~/Library/Application Support/Codex Theme`.
 - Attaches once to each Codex page and installs a versioned, single-instance UI runtime.
+- Uses the current app-shell, composer, and surface tokens while retaining fallbacks for older builds.
 - Keeps animation nodes alive across activity fades and updates DOM only when state actually changes.
 - Reads usage from the app's own `/wham/usage` response and caches the latest result locally for up to six hours.
 - Leaves `/Applications/ChatGPT.app`, `/Applications/Codex.app`, and their `app.asar` files untouched.
