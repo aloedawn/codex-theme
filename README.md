@@ -12,7 +12,7 @@ The included [`image.jpg`](image.jpg) and [`fire.gif`](fire.gif) reproduce the a
 ### Chat surface
 
 - Shows `image.jpg` behind the active chat surface with a 60% dark overlay while retaining the native translucent sidebar material.
-- Paints the wallpaper and bottom composer fade from one full-size surface, avoiding bright seams at the sidebar edge and hard gradient cuts when the top-right panel is open.
+- Removes the native top and bottom surface fades so the wallpaper keeps one uniform dimming level from edge to edge.
 - Applies translucent colors to the current input, dropdown, secondary, and code surfaces while preserving the app's native layout and controls.
 
 ### ChatGPT Work file-review cards

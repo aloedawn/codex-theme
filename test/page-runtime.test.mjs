@@ -583,18 +583,15 @@ test("current app surface tokens are themed without hiding pricing or upgrade UI
   assert.doesNotMatch(css, /#pricing/);
 });
 
-test("the bottom composer fade spans the wallpaper root without changing native layout", () => {
+test("the native top and bottom fades are removed without changing their layout", () => {
   const css = createThemeCss("data:image/jpeg;base64,aW1hZ2U=");
 
-  assert.match(css, /--codex-chat-bottom-scrim-height: 10rem;/);
+  assert.doesNotMatch(css, /--codex-chat-bottom-scrim/);
+  assert.match(css, /background-size: cover, cover/);
+  assert.match(css, /background-position: center center, center center/);
   assert.match(
     css,
-    /background-size: 100% var\(--codex-chat-bottom-scrim-height\), cover, cover/,
-  );
-  assert.match(css, /background-position: center bottom, center center, center center/);
-  assert.match(
-    css,
-    /\.pointer-events-none\.absolute\.inset-x-0\.bottom-0\.z-0\.h-full\.bg-gradient-to-t\.from-surface\.via-surface \{[\s\S]*?background-image: none !important;/,
+    /:is\([\s\S]*?\[class\*="_MainContentTopFade_"\][\s\S]*?\.pointer-events-none\.absolute\.inset-x-0\.bottom-0\.z-0\.h-full\.bg-gradient-to-t\.from-surface\.via-surface[\s\S]*?\) \{[\s\S]*?background-image: none !important;/,
   );
   assert.doesNotMatch(
     css,

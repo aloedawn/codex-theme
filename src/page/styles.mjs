@@ -5,8 +5,6 @@ export function createThemeCss(imageDataUrl) {
   --codex-chat-input: rgb(255 255 255 / 86%);
   --codex-chat-dropdown: rgb(255 255 255 / 94%);
   --codex-chat-code: rgb(246 248 248 / 90%);
-  --codex-chat-bottom-scrim: rgb(250 251 250 / 96%);
-  --codex-chat-bottom-scrim-height: 10rem;
 }
 
 :root:is(.dark, .electron-dark) {
@@ -14,7 +12,6 @@ export function createThemeCss(imageDataUrl) {
   --codex-chat-input: rgb(28 34 36 / 88%);
   --codex-chat-dropdown: rgb(24 29 31 / 94%);
   --codex-chat-code: rgb(16 21 23 / 92%);
-  --codex-chat-bottom-scrim: rgb(24 29 31 / 96%);
 }
 
 :is([data-app-shell-main-surface], [class*="_MainContentSurface_"]) {
@@ -47,19 +44,13 @@ export function createThemeCss(imageDataUrl) {
  */
 [data-codex-theme-wallpaper-root="true"] {
   background-image:
-    linear-gradient(
-      to top,
-      var(--codex-chat-bottom-scrim) 0%,
-      var(--codex-chat-bottom-scrim) 48%,
-      transparent 100%
-    ),
     linear-gradient(rgb(0 0 0 / 60%), rgb(0 0 0 / 60%)),
     url(${JSON.stringify(imageDataUrl)}) !important;
   background-clip: border-box !important;
   background-origin: border-box !important;
-  background-position: center bottom, center center, center center !important;
+  background-position: center center, center center !important;
   background-repeat: no-repeat !important;
-  background-size: 100% var(--codex-chat-bottom-scrim-height), cover, cover !important;
+  background-size: cover, cover !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
   position: relative !important;
@@ -69,13 +60,14 @@ export function createThemeCss(imageDataUrl) {
 }
 
 /*
- * The app's native composer fade is sized by an inner content wrapper. When a
- * top-right panel is open that wrapper can stop before the right edge, leaving
- * a hard vertical cut. The wallpaper root now owns the same fade full-width;
- * keep the native node for layout but remove only its cropped paint.
+ * Keep the app's native edge-fade nodes for layout, but remove their paint so
+ * the wallpaper has the same uniform dimming from the top edge to the bottom.
  */
 [data-codex-theme-wallpaper-root="true"]
-  .pointer-events-none.absolute.inset-x-0.bottom-0.z-0.h-full.bg-gradient-to-t.from-surface.via-surface {
+  :is(
+    [class*="_MainContentTopFade_"],
+    .pointer-events-none.absolute.inset-x-0.bottom-0.z-0.h-full.bg-gradient-to-t.from-surface.via-surface
+  ) {
   background-image: none !important;
 }
 
