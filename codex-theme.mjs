@@ -20,7 +20,7 @@ var CdpPipe = class {
     this.output.setEncoding("utf8");
     this.output.on("data", (chunk) => this.handleChunk(chunk));
     this.output.on("error", (error) => this.failAll(error));
-    this.output.on("close", () => this.failAll(new Error("디버깅 파이프가 닫혔사옵니다.")));
+    this.output.on("close", () => this.failAll(new Error("디버깅 파이프가 닫혔습니다.")));
   }
   handleChunk(chunk) {
     this.buffer += chunk;
@@ -34,7 +34,7 @@ var CdpPipe = class {
       try {
         message = JSON.parse(raw);
       } catch (error) {
-        console.error("[wallpaper] CDP 메시지를 해석하지 못했사옵니다:", error.message);
+        console.error("[wallpaper] CDP 메시지를 해석하지 못했습니다:", error.message);
         continue;
       }
       if (message.id != null) {
@@ -63,7 +63,7 @@ var CdpPipe = class {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`${method} 응답 시간이 초과되었사옵니다.`));
+        reject(new Error(`${method} 응답 시간이 초과되었습니다.`));
       }, this.requestTimeoutMs);
       this.pending.set(id, { resolve, reject, timeout });
       this.input.write(`${JSON.stringify(message)}\0`);
@@ -129,7 +129,7 @@ function parseArguments(argv, projectPath2) {
     } else if (argument === "--help" || argument === "-h") {
       options.help = true;
     } else {
-      throw new Error(`알 수 없는 인자이옵니다: ${argument}`);
+      throw new Error(`알 수 없는 인자입니다: ${argument}`);
     }
   }
   return options;
@@ -156,23 +156,23 @@ function findAppExecutable() {
 }
 function validateAssets(options) {
   if (!fs.existsSync(options.imagePath)) {
-    throw new Error(`배경 사진이 없사옵니다: ${options.imagePath}`);
+    throw new Error(`배경 사진이 없습니다: ${options.imagePath}`);
   }
   if (!fs.statSync(options.imagePath).isFile()) {
-    throw new Error(`배경 경로가 파일이 아니옵니다: ${options.imagePath}`);
+    throw new Error(`배경 경로가 파일이 아닙니다: ${options.imagePath}`);
   }
   if (!fs.existsSync(options.firePath)) {
-    throw new Error(`불꽃 GIF가 없사옵니다: ${options.firePath}`);
+    throw new Error(`불꽃 GIF가 없습니다: ${options.firePath}`);
   }
   if (!fs.statSync(options.firePath).isFile()) {
-    throw new Error(`불꽃 경로가 파일이 아니옵니다: ${options.firePath}`);
+    throw new Error(`불꽃 경로가 파일이 아닙니다: ${options.firePath}`);
   }
   const imageExtension = path.extname(options.imagePath).toLowerCase();
   if (![".jpg", ".jpeg", ".png"].includes(imageExtension)) {
-    throw new Error("배경은 JPEG 또는 PNG 파일이어야 하옵니다.");
+    throw new Error("배경은 JPEG 또는 PNG 파일이어야 합니다.");
   }
   if (path.extname(options.firePath).toLowerCase() !== ".gif") {
-    throw new Error("불꽃은 GIF 파일이어야 하옵니다.");
+    throw new Error("불꽃은 GIF 파일이어야 합니다.");
   }
 }
 function assetDataUrl(assetPath) {
@@ -184,7 +184,7 @@ function assetDataUrl(assetPath) {
     ".png": "image/png"
   };
   const mimeType = mimeTypes[extension];
-  if (mimeType == null) throw new Error(`지원하지 않는 이미지 형식이옵니다: ${extension}`);
+  if (mimeType == null) throw new Error(`지원하지 않는 이미지 형식입니다: ${extension}`);
   return `data:${mimeType};base64,${fs.readFileSync(assetPath).toString("base64")}`;
 }
 function parsePinnedSshHosts(configPath) {
@@ -281,7 +281,7 @@ function writeUsageCache(cachePath, usage) {
     fs.writeFileSync(cachePath, `${JSON.stringify(usage)}
 `, { mode: 384 });
   } catch (error) {
-    console.error(`[wallpaper] 사용량 캐시를 저장하지 못했사옵니다: ${error.message}`);
+    console.error(`[wallpaper] 사용량 캐시를 저장하지 못했습니다: ${error.message}`);
   }
 }
 
@@ -408,7 +408,7 @@ var TargetController = class {
         flatten: true
       });
       sessionId = attached.sessionId;
-      if (!sessionId) throw new Error("CDP 세션 ID를 받지 못했사옵니다.");
+      if (!sessionId) throw new Error("CDP 세션 ID를 받지 못했습니다.");
       if (!this.#isCurrent(targetId, record, generation)) {
         await this.#detachQuietly(sessionId);
         return;
@@ -432,7 +432,7 @@ var TargetController = class {
         sessionId
       );
       if (result.exceptionDetails) {
-        throw new Error(result.exceptionDetails.text ?? "주입 중 예외가 발생했사옵니다.");
+        throw new Error(result.exceptionDetails.text ?? "주입 중 예외가 발생했습니다.");
       }
       if (!this.#isCurrent(targetId, record, generation)) return;
       await this.pushUiState(sessionId);
@@ -445,7 +445,7 @@ var TargetController = class {
       try {
         await this.onReady({ targetId, sessionId, targetInfo: record.targetInfo });
       } catch (error) {
-        this.logger.error(`[wallpaper] 적용 후 진단에 실패했사옵니다: ${error.message}`);
+        this.logger.error(`[wallpaper] 적용 후 진단에 실패했습니다: ${error.message}`);
       }
     } catch (error) {
       if (sessionId) this.sessionTargets.delete(sessionId);
@@ -570,6 +570,8 @@ function installPageRuntime(initialConfig) {
     let nativeTurnDiffRenderRequested = false;
     let nativeTurnDiffLastError = null;
     const nativeTurnDiffRoots = /* @__PURE__ */ new Map();
+    const workCommandSummaryNodes = /* @__PURE__ */ new Map();
+    const workTechnicalDetailNodes = /* @__PURE__ */ new Map();
     let structureFrame = 0;
     let activityFrame = 0;
     let usageFetchInFlight = null;
@@ -613,7 +615,11 @@ function installPageRuntime(initialConfig) {
       nativeTurnDiffLoads: 0,
       nativeTurnDiffLoadErrors: 0,
       nativeTurnDiffRenders: 0,
-      nativeTurnDiffRenderErrors: 0
+      nativeTurnDiffRenderErrors: 0,
+      workCommandSummaryReveals: 0,
+      workCommandSummaryRestores: 0,
+      workTechnicalDetailRenders: 0,
+      workTechnicalDetailRemovals: 0
     };
     loadCachedUsage();
     const runtime2 = {
@@ -711,7 +717,7 @@ function installPageRuntime(initialConfig) {
       return new Promise((resolve, reject) => {
         const bridge = globalThis.electronBridge;
         if (typeof bridge?.sendMessageFromView !== "function") {
-          reject(new Error("앱 요청 통로를 찾지 못했사옵니다"));
+          reject(new Error("앱 요청 통로를 찾지 못했습니다"));
           return;
         }
         const requestId = globalThis.crypto?.randomUUID?.() || `codex-theme-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -728,7 +734,7 @@ function installPageRuntime(initialConfig) {
           const message = event.data;
           if (message?.type !== "fetch-response" || message.requestId !== requestId) return;
           if (message.responseType !== "success") {
-            finish(reject, new Error(message.error || "사용량 요청이 실패했사옵니다"));
+            finish(reject, new Error(message.error || "사용량 요청이 실패했습니다"));
             return;
           }
           try {
@@ -738,7 +744,7 @@ function installPageRuntime(initialConfig) {
           }
         };
         timeout = setTimeout(() => {
-          finish(reject, new Error("사용량 요청 시간이 초과되었사옵니다"));
+          finish(reject, new Error("사용량 요청 시간이 초과되었습니다"));
         }, 1e4);
         window.addEventListener("message", onMessage);
         Promise.resolve(bridge.sendMessageFromView({
@@ -760,7 +766,7 @@ function installPageRuntime(initialConfig) {
       usageFetchInFlight = (async () => {
         try {
           const usage = normalizeUsagePayload2(await fetchUsagePayload());
-          if (usage == null) throw new Error("사용량 응답 형식이 올바르지 않사옵니다");
+          if (usage == null) throw new Error("사용량 응답 형식이 올바르지 않습니다");
           uiState.usageError = null;
           updateState({ usage });
         } catch (error) {
@@ -940,18 +946,76 @@ function installPageRuntime(initialConfig) {
     function firstDefined(current, next) {
       return current == null && next != null ? next : current;
     }
+    function statusTurnInProgress(status) {
+      if (typeof status !== "string") return null;
+      const normalized = status.toLowerCase().replace(/[^a-z]/g, "");
+      if (["active", "inprogress", "running", "started", "streaming", "working"].includes(normalized)) {
+        return true;
+      }
+      if ([
+        "cancelled",
+        "canceled",
+        "complete",
+        "completed",
+        "done",
+        "failed",
+        "interrupted",
+        "stopped"
+      ].includes(normalized)) {
+        return false;
+      }
+      return null;
+    }
+    function turnInProgressFromProps(props) {
+      if (props == null || typeof props !== "object") return null;
+      const explicit = [
+        props.isTurnInProgress,
+        props.turn?.isTurnInProgress,
+        props.turnState?.isTurnInProgress
+      ].find((value) => typeof value === "boolean");
+      if (explicit != null) return explicit;
+      for (const status of [props.turn?.status, props.turnState?.status, props.turnStatus]) {
+        const inProgress = statusTurnInProgress(status);
+        if (inProgress != null) return inProgress;
+      }
+      for (const completed of [props.turn?.completed, props.turnState?.completed]) {
+        if (typeof completed === "boolean") return !completed;
+      }
+      return null;
+    }
+    function turnItemsFromProps(props) {
+      if (props == null || typeof props !== "object") return [];
+      return [props.items, props.turn?.items, props.turnState?.items, props.mcpTurn?.items].filter(Array.isArray).sort((left, right) => right.length - left.length)[0] ?? [];
+    }
+    function itemsLookInProgress(items) {
+      const streamingTypes = /* @__PURE__ */ new Set([
+        "command-execution",
+        "dynamic-tool-call",
+        "mcp-tool-call",
+        "web-search"
+      ]);
+      return items.some((item) => {
+        if (item == null || typeof item !== "object" || !streamingTypes.has(item.type)) {
+          return false;
+        }
+        if (item.completed === false) return true;
+        return statusTurnInProgress(item.executionStatus ?? item.status) === true;
+      });
+    }
     function turnDiffContext(fiber, initialProps, item) {
-      let conversationDetailLevel = initialProps?.conversationDetailLevel ?? null;
+      let conversationDetailLevel = initialProps?.conversationDetailLevel ?? initialProps?.threadDetailLevel ?? null;
       let conversationId = initialProps?.conversationId ?? initialProps?.turn?.conversationId ?? initialProps?.turnState?.conversationId ?? null;
-      let cwd = initialProps?.cwd ?? item.cwd ?? initialProps?.turn?.cwd ?? initialProps?.turnState?.cwd ?? null;
+      let cwd = initialProps?.cwd ?? item?.cwd ?? initialProps?.turn?.cwd ?? initialProps?.turnState?.cwd ?? null;
       let hostId = initialProps?.hostId ?? initialProps?.turn?.hostId ?? initialProps?.turnState?.hostId ?? null;
       let turnId = initialProps?.turnId ?? initialProps?.turn?.id ?? initialProps?.turnState?.turnId ?? null;
+      let isTurnInProgress = turnInProgressFromProps(initialProps);
+      let turnItems = turnItemsFromProps(initialProps);
       for (let current = fiber?.return; current != null; current = current.return) {
         const props = fiberProps(current);
         if (props == null) continue;
         conversationDetailLevel = firstDefined(
           conversationDetailLevel,
-          props.conversationDetailLevel
+          props.conversationDetailLevel ?? props.threadDetailLevel
         );
         conversationId = firstDefined(
           conversationId,
@@ -960,8 +1024,19 @@ function installPageRuntime(initialConfig) {
         cwd = firstDefined(cwd, props.cwd ?? props.turn?.cwd ?? props.turnState?.cwd);
         hostId = firstDefined(hostId, props.hostId ?? props.turn?.hostId ?? props.turnState?.hostId);
         turnId = firstDefined(turnId, props.turnId ?? props.turn?.id ?? props.turnState?.turnId);
+        isTurnInProgress = firstDefined(isTurnInProgress, turnInProgressFromProps(props));
+        const candidateItems = turnItemsFromProps(props);
+        if (candidateItems.length > turnItems.length) turnItems = candidateItems;
       }
-      return { conversationDetailLevel, conversationId, cwd, hostId, turnId };
+      return {
+        conversationDetailLevel,
+        conversationId,
+        cwd,
+        hostId,
+        isTurnInProgress: isTurnInProgress ?? itemsLookInProgress(turnItems),
+        turnId,
+        turnItems
+      };
     }
     function reactProviderFibers(fiber) {
       const providers = [];
@@ -1141,6 +1216,23 @@ function installPageRuntime(initialConfig) {
       nativeTurnDiffLastError = String(error?.stack || error);
       diagnostics.nativeTurnDiffRenderErrors += 1;
     }
+    function assistantActionRow(host) {
+      if (!(host instanceof HTMLElement)) return null;
+      const rows = Array.from(host.querySelectorAll("div")).filter((element) => element instanceof HTMLElement && !isOwnedNode(element) && element.classList.contains("mt-1.5") && element.classList.contains("h-5") && element.classList.contains("items-center") && element.classList.contains("justify-start") && element.classList.contains("gap-0.5"));
+      return rows.at(-1) ?? null;
+    }
+    function placeNativeTurnDiffContainer(host, container) {
+      const actionRow = assistantActionRow(host);
+      if (actionRow?.parentElement instanceof HTMLElement) {
+        if (container.parentElement !== actionRow.parentElement || container.nextElementSibling !== actionRow) {
+          actionRow.before(container);
+        }
+        return;
+      }
+      if (container.parentElement !== host || host.lastElementChild !== container) {
+        host.append(container);
+      }
+    }
     function mountNativeTurnDiff(runtime22, entry) {
       let record = nativeTurnDiffRoots.get(entry.key);
       if (record != null && (record.host !== entry.host || !record.container.isConnected)) {
@@ -1151,7 +1243,7 @@ function installPageRuntime(initialConfig) {
         const container = markOwned(document.createElement("div"));
         container.setAttribute("data-codex-theme-native-turn-diff", "true");
         container.dataset.diffKey = entry.key;
-        entry.host.append(container);
+        placeNativeTurnDiffContainer(entry.host, container);
         const root = runtime22.createRoot(container, {
           onCaughtError: reportNativeTurnDiffRenderError,
           onUncaughtError: reportNativeTurnDiffRenderError,
@@ -1160,6 +1252,7 @@ function installPageRuntime(initialConfig) {
         record = { container, host: entry.host, root };
         nativeTurnDiffRoots.set(entry.key, record);
       }
+      placeNativeTurnDiffContainer(entry.host, record.container);
       try {
         record.root.render(nativeTurnDiffElement(runtime22, entry));
         diagnostics.nativeTurnDiffRenders += 1;
@@ -1183,6 +1276,7 @@ function installPageRuntime(initialConfig) {
         if (items.length > 0) {
           for (const item of items) {
             const context = turnDiffContext(fiber, props, item);
+            if (context.isTurnInProgress) continue;
             const host = chatTurnDiffHost(fiber, context);
             if (!(host instanceof HTMLElement)) continue;
             if (context.conversationId == null) continue;
@@ -1259,6 +1353,334 @@ ${item.unifiedDiff}`);
           scheduleChatTurnDiffRender();
         }
       });
+    }
+    function commandText(item) {
+      const candidates = [
+        item?.parsedCmd?.cmd,
+        item?.command,
+        item?.cmd,
+        item?.arguments?.command
+      ];
+      for (const candidate of candidates) {
+        if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+        if (Array.isArray(candidate) && candidate.length > 0) {
+          return candidate.map(String).join(" ").trim();
+        }
+      }
+      return "";
+    }
+    function redactCommand(value) {
+      const secretName = "(?:[A-Z0-9_]*(?:API_?KEY|ACCESS_?TOKEN|AUTHORIZATION|BEARER|COOKIE|CREDENTIALS?|PASSWORD|PASSWD|SECRET|TOKEN)[A-Z0-9_]*)";
+      const secretFlag = "(?:api[-_]?key|access[-_]?token|authorization|bearer|cookie|credentials?|password|passwd|secret|token)";
+      const argument = `(?:"[^"\\n]*"|'[^'\\n]*'|[^\\s]+)`;
+      return String(value).replace(new RegExp(`\\b(${secretName})=(${argument})`, "gi"), "$1=<redacted>").replace(new RegExp(`(--${secretFlag})(?:=|\\s+)(${argument})`, "gi"), "$1 <redacted>");
+    }
+    function diffPaths(unifiedDiff) {
+      if (typeof unifiedDiff !== "string") return [];
+      const paths = [];
+      for (const match of unifiedDiff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)) {
+        const before = match[1]?.trim();
+        const after = match[2]?.trim();
+        if (before) paths.push(before);
+        if (after && after !== before) paths.push(after);
+      }
+      return paths;
+    }
+    function fencedCodeBlocks(content) {
+      if (typeof content !== "string") return [];
+      const blocks = [];
+      for (const match of content.matchAll(/```([^\n`]*)\n([\s\S]*?)```/g)) {
+        blocks.push({
+          code: redactCommand(match[2].trim()),
+          language: match[1].trim()
+        });
+      }
+      return blocks;
+    }
+    function addUnique(values, seen, value, limit = 100) {
+      if (values.length >= limit || value == null) return;
+      const text = String(value).trim();
+      if (!text || seen.has(text)) return;
+      seen.add(text);
+      values.push(text.slice(0, 8e3));
+    }
+    function workTechnicalDetails(items) {
+      const details = {
+        commands: [],
+        files: [],
+        planCode: [],
+        planSteps: [],
+        searches: [],
+        tools: []
+      };
+      const seen = Object.fromEntries(
+        Object.keys(details).map((key) => [key, /* @__PURE__ */ new Set()])
+      );
+      for (const item of items.slice(0, 500)) {
+        if (item == null || typeof item !== "object") continue;
+        const command = commandText(item);
+        if (command) addUnique(details.commands, seen.commands, redactCommand(command));
+        for (const path3 of [item.path, item.filePath, item.fsPath, item.parsedCmd?.path]) {
+          addUnique(details.files, seen.files, path3);
+        }
+        for (const change of Array.isArray(item.changes) ? item.changes : []) {
+          addUnique(details.files, seen.files, change?.path ?? change?.filePath);
+        }
+        for (const path3 of diffPaths(item.unifiedDiff)) {
+          addUnique(details.files, seen.files, path3);
+        }
+        if (item.type === "proposed-plan") {
+          const content = item.content ?? item.plan ?? item.text;
+          for (const block of fencedCodeBlocks(content)) {
+            const key = `${block.language}
+${block.code}`;
+            if (seen.planCode.has(key) || details.planCode.length >= 30) continue;
+            seen.planCode.add(key);
+            details.planCode.push(block);
+          }
+        }
+        if (["todo-list", "plan", "proposed-plan"].includes(item.type)) {
+          const steps = [item.items, item.steps, item.todos, item.plan].find(Array.isArray) ?? [];
+          for (const step of steps) {
+            const text = typeof step === "string" ? step : step?.step ?? step?.text ?? step?.content ?? step?.title;
+            const status = typeof step === "object" ? step?.status ?? step?.state : null;
+            addUnique(
+              details.planSteps,
+              seen.planSteps,
+              status && text ? `[${status}] ${text}` : text
+            );
+          }
+        }
+        if (["dynamic-tool-call", "mcp-tool-call"].includes(item.type)) {
+          const server = item.server ?? item.serverName ?? item.mcpServer;
+          const tool = item.tool ?? item.toolName ?? item.name;
+          addUnique(details.tools, seen.tools, [server, tool].filter(Boolean).join(" · "));
+        }
+        if (item.type === "web-search") {
+          for (const query of [
+            item.query,
+            item.searchQuery,
+            ...Array.isArray(item.queries) ? item.queries : []
+          ]) {
+            addUnique(details.searches, seen.searches, query?.q ?? query);
+          }
+        }
+      }
+      return details;
+    }
+    function workTechnicalDetailsCount(details) {
+      return details.commands.length + details.files.length + details.planCode.length + details.planSteps.length + details.searches.length + details.tools.length;
+    }
+    function appendWorkDetailSection(body, title, values, { code = false } = {}) {
+      if (values.length === 0) return;
+      const section = document.createElement("section");
+      section.className = "codex-theme-work-details-section";
+      const heading = document.createElement("h4");
+      heading.textContent = title;
+      section.append(heading);
+      for (const value of values) {
+        const row = document.createElement(code ? "pre" : "div");
+        row.className = code ? "codex-theme-work-details-code" : "codex-theme-work-details-row";
+        if (code && typeof value === "object") {
+          if (value.language) row.dataset.language = value.language;
+          row.textContent = value.code;
+        } else {
+          row.textContent = String(value);
+        }
+        section.append(row);
+      }
+      body.append(section);
+    }
+    function createWorkTechnicalDetailsNode(entry, open = false) {
+      const panel = markOwned(document.createElement("details"));
+      panel.className = "codex-theme-work-details";
+      panel.setAttribute("data-codex-theme-work-details", "true");
+      panel.dataset.detailKey = entry.key;
+      panel.open = open;
+      const summary = document.createElement("summary");
+      const title = document.createElement("span");
+      title.className = "codex-theme-work-details-title";
+      title.textContent = "Codex details";
+      const meta = document.createElement("span");
+      meta.className = "codex-theme-work-details-meta";
+      const count = workTechnicalDetailsCount(entry.details);
+      meta.textContent = `${entry.context.isTurnInProgress ? "Working · " : ""}${count} item${count === 1 ? "" : "s"}`;
+      summary.append(title, meta);
+      panel.append(summary);
+      const body = document.createElement("div");
+      body.className = "codex-theme-work-details-body";
+      appendWorkDetailSection(body, "Commands", entry.details.commands, { code: true });
+      appendWorkDetailSection(body, "Files", entry.details.files, { code: true });
+      appendWorkDetailSection(body, "Plan steps", entry.details.planSteps);
+      appendWorkDetailSection(body, "Plan code", entry.details.planCode, { code: true });
+      appendWorkDetailSection(body, "Tools", entry.details.tools, { code: true });
+      appendWorkDetailSection(body, "Web searches", entry.details.searches);
+      panel.append(body);
+      return panel;
+    }
+    function discoverWorkTechnicalDetails() {
+      const root = currentReactFiberRoot();
+      if (root == null) return /* @__PURE__ */ new Map();
+      const discovered = /* @__PURE__ */ new Map();
+      const stack = [root];
+      const visited = /* @__PURE__ */ new Set();
+      while (stack.length > 0 && visited.size < 1e5) {
+        const fiber = stack.pop();
+        if (fiber == null || visited.has(fiber)) continue;
+        visited.add(fiber);
+        const props = fiberProps(fiber);
+        const items = turnItemsFromProps(props);
+        if (items.length > 0) {
+          const context = turnDiffContext(fiber, props, null);
+          if (context.conversationDetailLevel === "STEPS_PROSE" && context.conversationId != null && context.turnId != null) {
+            const host = chatTurnDiffHost(fiber, context);
+            const details = workTechnicalDetails(context.turnItems);
+            const count = workTechnicalDetailsCount(details);
+            if (host instanceof HTMLElement && count > 0) {
+              const key = `${context.conversationId}:${context.turnId}`;
+              const signature = hashText(JSON.stringify({
+                details,
+                isTurnInProgress: context.isTurnInProgress
+              }));
+              const score = context.turnItems.length + count * 10;
+              const previous = discovered.get(key);
+              if (previous == null || score > previous.score) {
+                discovered.set(key, { context, details, host, key, score, signature });
+              }
+            }
+          }
+        }
+        if (fiber.sibling != null) stack.push(fiber.sibling);
+        if (fiber.child != null) stack.push(fiber.child);
+      }
+      return discovered;
+    }
+    function renderWorkTechnicalDetails() {
+      if (disposed || !document.documentElement) return;
+      const discovered = discoverWorkTechnicalDetails();
+      for (const [key, record] of workTechnicalDetailNodes) {
+        const entry = discovered.get(key);
+        if (entry != null && entry.host === record.host && record.node.isConnected) continue;
+        record.node.remove();
+        workTechnicalDetailNodes.delete(key);
+        diagnostics.workTechnicalDetailRemovals += 1;
+      }
+      for (const entry of discovered.values()) {
+        const previous = workTechnicalDetailNodes.get(entry.key);
+        if (previous != null && previous.host === entry.host && previous.signature === entry.signature && previous.node.isConnected) {
+          continue;
+        }
+        const open = previous?.node?.open === true;
+        const node = createWorkTechnicalDetailsNode(entry, open);
+        if (previous?.node?.isConnected) previous.node.replaceWith(node);
+        else entry.host.append(node);
+        workTechnicalDetailNodes.set(entry.key, {
+          host: entry.host,
+          node,
+          signature: entry.signature
+        });
+        diagnostics.workTechnicalDetailRenders += 1;
+      }
+    }
+    function commandEntryForElement(element) {
+      for (let current = reactFiberForElement(element); current != null; current = current.return) {
+        const props = fiberProps(current);
+        const item = props?.item;
+        if (item != null && typeof item === "object" && ["command-execution", "exec"].includes(item.type) && commandText(item)) {
+          return { context: turnDiffContext(current, props, item), fiber: current, item };
+        }
+      }
+      return null;
+    }
+    function commandSummaryFromHeader(header) {
+      const summary = Array.from(header.querySelectorAll("span")).find((element) => element instanceof HTMLElement && element.classList.contains("min-w-0") && element.classList.contains("truncate"));
+      return summary instanceof HTMLElement ? summary : null;
+    }
+    function commandSummaryNode(body, host) {
+      for (let current = body.parentElement; current instanceof HTMLElement && host.contains(current); current = current.parentElement) {
+        const header = Array.from(current.querySelectorAll("div")).find((element) => element instanceof HTMLElement && element.classList.contains("group/activity-header") && !element.contains(body));
+        if (!(header instanceof HTMLElement)) continue;
+        const summary = commandSummaryFromHeader(header);
+        if (summary != null) return summary;
+      }
+      return null;
+    }
+    function commandSummaryTextNode(summary) {
+      const walker = document.createTreeWalker(summary, NodeFilter.SHOW_TEXT);
+      const candidates = [];
+      let node;
+      while (node = walker.nextNode()) {
+        if (node.nodeValue?.trim()) candidates.push(node);
+      }
+      return candidates.sort((left, right) => right.nodeValue.trim().length - left.nodeValue.trim().length)[0] ?? null;
+    }
+    function commandTextWithNativeWhitespace(originalText, command) {
+      const leading = originalText.match(/^\s*/)?.[0] ?? "";
+      const trailing = originalText.match(/\s*$/)?.[0] ?? "";
+      return `${leading}${command}${trailing}`;
+    }
+    function restoreWorkCommandSummary(node, record = workCommandSummaryNodes.get(node)) {
+      if (record?.textNode?.isConnected && record.textNode.nodeValue === record.renderedText) {
+        record.textNode.nodeValue = record.originalText;
+      }
+      removeAttributeIfPresent(node, "data-codex-theme-work-command-summary");
+      removeAttributeIfPresent(node, "data-codex-theme-work-command");
+      diagnostics.workCommandSummaryRestores += 1;
+    }
+    function renderWorkCommandSummaries() {
+      const desired = /* @__PURE__ */ new Map();
+      const candidates = /* @__PURE__ */ new Set([
+        ...document.querySelectorAll('[data-testid="exec-shell-body"]'),
+        ...document.getElementsByClassName("group/activity-header")
+      ]);
+      for (const candidate of candidates) {
+        if (!(candidate instanceof HTMLElement) || isOwnedNode(candidate)) continue;
+        const entry = commandEntryForElement(candidate);
+        if (entry?.context.conversationDetailLevel !== "STEPS_PROSE") continue;
+        const host = chatTurnDiffHost(entry.fiber, entry.context);
+        if (!(host instanceof HTMLElement)) continue;
+        const summary = candidate.classList.contains("group/activity-header") ? commandSummaryFromHeader(candidate) : commandSummaryNode(candidate, host);
+        if (!(summary instanceof HTMLElement)) continue;
+        const command = redactCommand(commandText(entry.item));
+        const textNode = commandSummaryTextNode(summary);
+        if (command && textNode != null) desired.set(summary, { command, textNode });
+      }
+      for (const [node] of workCommandSummaryNodes) {
+        if (desired.has(node) && node.isConnected) continue;
+        restoreWorkCommandSummary(node);
+        workCommandSummaryNodes.delete(node);
+      }
+      for (const [node, desiredEntry] of desired) {
+        const { command, textNode } = desiredEntry;
+        let record = workCommandSummaryNodes.get(node);
+        if (record != null && record.textNode !== textNode) {
+          restoreWorkCommandSummary(node, record);
+          workCommandSummaryNodes.delete(node);
+          record = null;
+        }
+        if (record == null) {
+          record = {
+            command,
+            originalText: textNode.nodeValue,
+            renderedText: "",
+            textNode
+          };
+          workCommandSummaryNodes.set(node, record);
+          diagnostics.workCommandSummaryReveals += 1;
+        } else if (textNode.nodeValue !== record.renderedText) {
+          record.originalText = textNode.nodeValue;
+        }
+        record.command = command;
+        record.renderedText = commandTextWithNativeWhitespace(record.originalText, command);
+        if (textNode.nodeValue !== record.renderedText) textNode.nodeValue = record.renderedText;
+        setAttributeIfChanged(node, "data-codex-theme-work-command-summary", "true");
+        setAttributeIfChanged(node, "data-codex-theme-work-command", command.slice(0, 8e3));
+      }
+    }
+    function scheduleWorkModeEnhancements() {
+      scheduleChatTurnDiffRender();
+      renderWorkCommandSummaries();
+      renderWorkTechnicalDetails();
     }
     function serverSignalBars(latency) {
       if (!Number.isFinite(latency)) return 0;
@@ -1475,18 +1897,6 @@ ${item.unifiedDiff}`);
       context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       context.clearRect(0, 0, cssWidth, cssHeight);
       const metricsKey = `${Math.round(cssWidth * 10)}x${Math.round(cssHeight * 10)}`;
-      const surfaceStyle = getComputedStyle(composerSurface);
-      const measuredRadius = Number.parseFloat(surfaceStyle.borderTopLeftRadius) || Number.parseFloat(surfaceStyle.borderRadius) || Math.min(25, cssHeight / 2);
-      const clippedRadius = Math.min(
-        Math.max(measuredRadius, 0),
-        cssWidth / 2,
-        cssHeight / 2
-      );
-      setStylePropertyIfChanged(
-        composerCanvas,
-        "--codex-theme-composer-radius",
-        `${clippedRadius}px`
-      );
       const segmentCount = Math.min(480, Math.max(180, Math.ceil(cssWidth / 3)));
       const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
       const duration = reducedMotion ? 8e3 : 2400;
@@ -1869,7 +2279,7 @@ ${item.unifiedDiff}`);
       if (nextComposerSurface !== composerSurface) setComposerSurface(nextComposerSurface);
       const nextFireSurface = findMainSurface();
       if (nextFireSurface !== fireSurface) setFireSurface(nextFireSurface);
-      scheduleChatTurnDiffRender();
+      scheduleWorkModeEnhancements();
       scheduleActivity("structure");
     }
     function scheduleStructure() {
@@ -1959,7 +2369,7 @@ ${item.unifiedDiff}`);
         activityTimer = setInterval(scheduleActivity, ACTIVITY_REFRESH_MS);
         usageTimer = setInterval(refreshUsage, USAGE_REFRESH_MS);
         chatTurnDiffTimer = setInterval(
-          scheduleChatTurnDiffRender,
+          scheduleWorkModeEnhancements,
           CHAT_TURN_DIFF_REFRESH_MS
         );
         if (document.readyState === "loading") {
@@ -2039,7 +2449,9 @@ ${item.unifiedDiff}`);
           chatTurnDiffCards: document.querySelectorAll(
             '[data-codex-theme-native-turn-diff="true"]'
           ).length,
-          nativeTurnDiffCards: nativeTurnDiffRoots.size
+          nativeTurnDiffCards: nativeTurnDiffRoots.size,
+          workCommandSummaries: workCommandSummaryNodes.size,
+          workTechnicalDetails: workTechnicalDetailNodes.size
         },
         nativeTurnDiff: {
           loaded: nativeTurnDiffRuntime != null,
@@ -2097,6 +2509,12 @@ ${item.unifiedDiff}`);
       for (const [key, record] of nativeTurnDiffRoots) {
         removeNativeTurnDiffRoot(key, record);
       }
+      for (const [node] of workCommandSummaryNodes) {
+        restoreWorkCommandSummary(node);
+      }
+      workCommandSummaryNodes.clear();
+      for (const record of workTechnicalDetailNodes.values()) record.node.remove();
+      workTechnicalDetailNodes.clear();
       nativeTurnDiffRuntime = null;
       nativeTurnDiffRuntimePromise = null;
       nativeTurnDiffRenderInFlight = false;
@@ -2333,12 +2751,14 @@ function createThemeCss(imageDataUrl) {
 
 .codex-theme-rainbow-canvas {
   position: absolute;
-  z-index: 20;
+  z-index: -1;
   inset: 0;
+  box-sizing: border-box;
   width: 100%;
   height: 100%;
-  border-radius: var(--codex-theme-composer-radius, inherit);
-  clip-path: inset(0 round var(--codex-theme-composer-radius, 25px));
+  overflow: hidden;
+  border-radius: inherit;
+  corner-shape: inherit;
   pointer-events: none;
   contain: strict;
   mix-blend-mode: screen;
@@ -2380,6 +2800,109 @@ function createThemeCss(imageDataUrl) {
 
 .codex-theme-thumb-fire[data-active="true"][data-ready="true"] {
   opacity: 0.96;
+}
+
+/* Match the native Codex turn rhythm above file-review cards in Chat/Work. */
+[data-codex-theme-native-turn-diff="true"] {
+  margin-block-start: 20px;
+  margin-inline: 0;
+}
+
+.codex-theme-work-details {
+  box-sizing: border-box;
+  margin: 10px 0 2px;
+  overflow: clip;
+  border: 0.5px solid var(--color-border, rgb(127 127 127 / 22%));
+  border-radius: 10px;
+  background: var(--color-background-secondary-soft-alpha, var(--codex-chat-code));
+  color: var(--color-text-primary, inherit);
+}
+
+.codex-theme-work-details > summary {
+  display: flex;
+  min-height: 38px;
+  box-sizing: border-box;
+  cursor: pointer;
+  list-style: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  user-select: none;
+}
+
+.codex-theme-work-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.codex-theme-work-details > summary::before {
+  width: 12px;
+  flex: none;
+  color: var(--color-text-secondary, var(--color-token-description-foreground));
+  content: "›";
+  font-size: 17px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+
+.codex-theme-work-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.codex-theme-work-details-title {
+  min-width: 0;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.codex-theme-work-details-meta {
+  flex: none;
+  color: var(--color-text-secondary, var(--color-token-description-foreground));
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+.codex-theme-work-details-body {
+  display: grid;
+  gap: 12px;
+  padding: 0 11px 11px 31px;
+}
+
+.codex-theme-work-details-section {
+  min-width: 0;
+}
+
+.codex-theme-work-details-section h4 {
+  margin: 0 0 5px;
+  color: var(--color-text-secondary, var(--color-token-description-foreground));
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+:is(.codex-theme-work-details-row, .codex-theme-work-details-code) {
+  box-sizing: border-box;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.codex-theme-work-details-row + .codex-theme-work-details-row,
+.codex-theme-work-details-code + .codex-theme-work-details-code {
+  margin-top: 4px;
+}
+
+.codex-theme-work-details-code {
+  overflow-x: auto;
+  border-radius: 6px;
+  background: var(--color-codex-editor-inline-code-background, var(--codex-chat-code));
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  padding: 6px 8px;
 }
 
 .codex-theme-server-signal {
@@ -2429,7 +2952,7 @@ function createThemeCss(imageDataUrl) {
 }
 
 // src/page/source.mjs
-var PAGE_RUNTIME_VERSION = 14;
+var PAGE_RUNTIME_VERSION = 19;
 function createPageSource(imageDataUrl, fireDataUrl, { rainbowPreview = false } = {}) {
   const config = {
     version: PAGE_RUNTIME_VERSION,
@@ -2452,7 +2975,7 @@ async function main() {
   }
   const appExecutable = findAppExecutable();
   if (!appExecutable) {
-    throw new Error("/Applications에서 ChatGPT 또는 Codex 앱을 찾지 못했사옵니다.");
+    throw new Error("/Applications에서 ChatGPT 또는 Codex 앱을 찾지 못했습니다.");
   }
   validateAssets(options);
   console.log(`[wallpaper] 사진: ${options.imagePath}`);
@@ -2460,7 +2983,7 @@ async function main() {
   console.log(`[wallpaper] 앱: ${appExecutable}`);
   console.log(`[wallpaper] 전용 프로필: ${options.profilePath}`);
   if (options.dryRun) {
-    console.log("[wallpaper] 검사 완료. 앱은 실행하지 않았사옵니다.");
+    console.log("[wallpaper] 검사 완료. 앱은 실행하지 않았습니다.");
     return;
   }
   fs2.mkdirSync(options.profilePath, { recursive: true, mode: 448 });
@@ -2495,14 +3018,14 @@ async function main() {
   process.once("SIGTERM", terminate);
   process.once("exit", terminate);
   child.once("error", (error) => {
-    console.error("[wallpaper] 앱을 실행하지 못했사옵니다:", error.message);
+    console.error("[wallpaper] 앱을 실행하지 못했습니다:", error.message);
     process.exitCode = 1;
   });
   child.once("exit", (code, signal) => {
     controller?.dispose();
     if (latencyTimer) clearInterval(latencyTimer);
-    if (signal) console.log(`[wallpaper] Codex가 ${signal} 신호로 종료되었사옵니다.`);
-    else console.log(`[wallpaper] Codex가 종료되었사옵니다. 코드=${code ?? "unknown"}`);
+    if (signal) console.log(`[wallpaper] Codex가 ${signal} 신호로 종료되었습니다.`);
+    else console.log(`[wallpaper] Codex가 종료되었습니다. 코드=${code ?? "unknown"}`);
     process.exit(code ?? 0);
   });
   const cdp = new CdpPipe(child);
@@ -2523,7 +3046,7 @@ async function main() {
       sessionId
     );
     if (result.exceptionDetails) {
-      throw new Error(result.exceptionDetails.text ?? "화면 상태 갱신에 실패했사옵니다.");
+      throw new Error(result.exceptionDetails.text ?? "화면 상태 갱신에 실패했습니다.");
     }
   };
   const broadcastUiState = async () => {
@@ -2583,7 +3106,7 @@ async function main() {
       sessionId
     );
     if (result.exceptionDetails) {
-      throw new Error(result.exceptionDetails.text ?? "UI 진단에 실패했사옵니다.");
+      throw new Error(result.exceptionDetails.text ?? "UI 진단에 실패했습니다.");
     }
     console.log(`[wallpaper] UI 진단: ${JSON.stringify(result.result?.value ?? null)}`);
   };
@@ -2628,7 +3151,7 @@ async function main() {
       console.log(`[wallpaper] 사용량 갱신: ${usage.remainingPercent}% 남음`);
       await broadcastUiState();
     } catch (error) {
-      console.error(`[wallpaper] 사용량 응답을 읽지 못했사옵니다: ${error.message}`);
+      console.error(`[wallpaper] 사용량 응답을 읽지 못했습니다: ${error.message}`);
     }
   };
   cdp.eventHandler = async (message) => {
@@ -2652,7 +3175,7 @@ async function main() {
       try {
         await pushUiState(message.sessionId);
       } catch (error) {
-        console.error(`[wallpaper] 새 문서 상태 갱신을 건너뛰었사옵니다: ${error.message}`);
+        console.error(`[wallpaper] 새 문서 상태 갱신을 건너뛰었습니다: ${error.message}`);
       }
       return;
     }
@@ -2684,7 +3207,7 @@ async function main() {
   await Promise.all(targetInfos.map((targetInfo) => controller.handleTargetInfo(targetInfo)));
   void refreshLatencies();
   latencyTimer = setInterval(() => void refreshLatencies(), LATENCY_REFRESH_MS);
-  console.log("[wallpaper] 실행기를 닫으면 이 전용 Codex 인스턴스도 함께 종료되옵니다.");
+  console.log("[wallpaper] 실행기를 닫으면 이 전용 Codex 인스턴스도 함께 종료됩니다.");
 }
 main().catch((error) => {
   console.error(`[wallpaper] ${error.message}`);
