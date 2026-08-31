@@ -35,6 +35,7 @@ export function installPageRuntime(initialConfig) {
   function createRuntime(startingConfig, retained) {
     const STYLE_ID = "codex-theme-style";
     const USAGE_PANEL_ID = "codex-theme-usage-panel";
+    const QUICK_CHAT_BUTTON_ID = "codex-theme-chat-quick-chat";
     const OWNED_ATTRIBUTE = "data-codex-theme-owned";
     const USAGE_CACHE_KEY = "codex-theme-usage-cache";
     const USAGE_REFRESH_MS = 60 * 1_000;
@@ -79,12 +80,21 @@ export function installPageRuntime(initialConfig) {
     let nativeTurnDiffRenderRequested = false;
     let nativeTurnDiffLastError = null;
     const nativeTurnDiffRoots = new Map();
+    const workCommandSummaryNodes = new Map();
+    const workTechnicalDetailNodes = new Map();
     let structureFrame = 0;
     let activityFrame = 0;
     let usageFetchInFlight = null;
     let activityState = null;
     let usageActivityActiveUntil = 0;
-
+    let quickChatHandler = null;
+    let quickChatTemplate = null;
+    let quickChatLabel = "";
+    let quickChatPrimaryLabel = "";
+    let quickChatRowClassName = "";
+    let quickChatRuntime = null;
+    let quickChatRuntimePromise = null;
+    let quickChatLastError = null;
     let composerSurface = null;
     let composerCanvas = null;
     let composerResizeObserver = null;
@@ -130,6 +140,16 @@ export function installPageRuntime(initialConfig) {
       nativeTurnDiffLoadErrors: 0,
       nativeTurnDiffRenders: 0,
       nativeTurnDiffRenderErrors: 0,
+      workCommandSummaryReveals: 0,
+      workCommandSummaryRestores: 0,
+      workTechnicalDetailRenders: 0,
+      workTechnicalDetailRemovals: 0,
+      quickChatHandlerCaptures: 0,
+      quickChatBridgeLoads: 0,
+      quickChatBridgeLoadErrors: 0,
+      quickChatButtonsCreated: 0,
+      quickChatOpens: 0,
+      quickChatOpenErrors: 0,
     };
 
     loadCachedUsage();
@@ -224,9 +244,14 @@ export function installPageRuntime(initialConfig) {
     }
 
     function normalizeUsagePayload(payload) {
-      const rateLimit = payload?.rate_limit;
-      if (rateLimit == null || typeof rateLimit !== "object") return null;
-      const windows = [rateLimit.primary_window, rateLimit.secondary_window]
+      const rateLimits = [
+        payload?.rate_limit,
+        ...(Array.isArray(payload?.additional_rate_limits)
+          ? payload.additional_rate_limits.map((limit) => limit?.rate_limit)
+          : []),
+      ].filter((rateLimit) => rateLimit != null && typeof rateLimit === "object");
+      const windows = rateLimits
+        .flatMap((rateLimit) => [rateLimit.primary_window, rateLimit.secondary_window])
         .filter((window) => window != null && Number.isFinite(Number(window.used_percent)))
         .map((window) => ({
           usedPercent: Number(window.used_percent),
@@ -259,7 +284,7 @@ export function installPageRuntime(initialConfig) {
       return new Promise((resolve, reject) => {
         const bridge = globalThis.electronBridge;
         if (typeof bridge?.sendMessageFromView !== "function") {
-          reject(new Error("앱 요청 통로를 찾지 못했사옵니다"));
+          reject(new Error("앱 요청 통로를 찾지 못했습니다"));
           return;
         }
         const requestId = globalThis.crypto?.randomUUID?.()
@@ -277,7 +302,7 @@ export function installPageRuntime(initialConfig) {
           const message = event.data;
           if (message?.type !== "fetch-response" || message.requestId !== requestId) return;
           if (message.responseType !== "success") {
-            finish(reject, new Error(message.error || "사용량 요청이 실패했사옵니다"));
+          finish(reject, new Error(message.error || "사용량 요청이 실패했습니다"));
             return;
           }
           try {
@@ -287,7 +312,7 @@ export function installPageRuntime(initialConfig) {
           }
         };
         timeout = setTimeout(() => {
-          finish(reject, new Error("사용량 요청 시간이 초과되었사옵니다"));
+          finish(reject, new Error("사용량 요청 시간이 초과되었습니다"));
         }, 10_000);
         window.addEventListener("message", onMessage);
         Promise.resolve(bridge.sendMessageFromView({
@@ -310,7 +335,7 @@ export function installPageRuntime(initialConfig) {
       usageFetchInFlight = (async () => {
         try {
           const usage = normalizeUsagePayload(await fetchUsagePayload());
-          if (usage == null) throw new Error("사용량 응답 형식이 올바르지 않사옵니다");
+          if (usage == null) throw new Error("사용량 응답 형식이 올바르지 않습니다");
           uiState.usageError = null;
           updateState({ usage });
         } catch (error) {
@@ -433,6 +458,307 @@ export function installPageRuntime(initialConfig) {
       setAttributeIfChanged(panel, "aria-label", formatted.title);
     }
 
+    function reactEventProps(element) {
+      if (!(element instanceof Element)) return null;
+      for (const key of Object.getOwnPropertyNames(element)) {
+        if (!key.startsWith("__reactProps$")) continue;
+        const props = element[key];
+        if (props != null && typeof props === "object") return props;
+      }
+      return fiberProps(reactFiberForElement(element));
+    }
+
+    function isQuickChatButton(button) {
+      if (!(button instanceof HTMLButtonElement) || isOwnedNode(button) || !isVisible(button)) {
+        return false;
+      }
+      if (button.querySelector('path[d^="M7.9834 5.3042"]')) return true;
+      const label = button.getAttribute("aria-label")?.toLocaleLowerCase() ?? "";
+      const normalized = label.replace(/[\s_-]+/g, "");
+      return normalized.includes("quickchat")
+        || normalized.includes("クイックチャット")
+        || normalized.includes("빠른채팅");
+    }
+
+    function quickChatRow(button, panel) {
+      for (let current = button.parentElement; current != null && current !== panel; current = current.parentElement) {
+        if (
+          current instanceof HTMLElement
+          && current.classList.contains("flex")
+          && current.classList.contains("items-center")
+          && current.classList.contains("gap-1")
+        ) {
+          return current;
+        }
+      }
+      return null;
+    }
+
+    function directChildWithin(element, ancestor) {
+      let current = element;
+      while (current.parentElement != null && current.parentElement !== ancestor) {
+        current = current.parentElement;
+      }
+      return current.parentElement === ancestor ? current : null;
+    }
+
+    function sanitizeQuickChatTemplate(template) {
+      if (!(template instanceof HTMLElement)) return null;
+      for (const element of [template, ...template.querySelectorAll("*")]) {
+        element.removeAttribute("id");
+        element.removeAttribute("aria-describedby");
+        element.removeAttribute("data-state");
+      }
+      markOwned(template);
+      return template;
+    }
+
+    function captureNativeQuickChat(panel) {
+      const nativeButton = Array.from(panel.querySelectorAll("button")).find(isQuickChatButton);
+      if (!(nativeButton instanceof HTMLButtonElement)) return null;
+      const row = quickChatRow(nativeButton, panel);
+      const branch = row == null ? null : directChildWithin(nativeButton, row);
+      const onClick = reactEventProps(nativeButton)?.onClick;
+      if (
+        !(row instanceof HTMLElement)
+        || !(branch instanceof HTMLElement)
+        || typeof onClick !== "function"
+      ) {
+        return nativeButton;
+      }
+
+      if (quickChatHandler !== onClick) diagnostics.quickChatHandlerCaptures += 1;
+      quickChatHandler = onClick;
+      quickChatTemplate = sanitizeQuickChatTemplate(branch.cloneNode(true));
+      quickChatLabel = nativeButton.getAttribute("aria-label")?.trim() || "Quick chat";
+      quickChatPrimaryLabel = row.textContent?.trim() ?? "";
+      quickChatRowClassName = row.className;
+      return nativeButton;
+    }
+
+    function normalizedQuickChatText(value) {
+      return String(value ?? "")
+        .toLocaleLowerCase()
+        .replace(/[\s_\-:：。、・!！?？()\[\]{}]+/g, "");
+    }
+
+    function isNewChatLabel(value) {
+      const normalized = normalizedQuickChatText(value);
+      return normalized === "newchat"
+        || normalized === "新しいチャット"
+        || normalized === "새채팅"
+        || normalized === "새로운채팅"
+        || normalized === "新聊天"
+        || normalized === "新建聊天";
+    }
+
+    function rowLooksLikeNewChat(row) {
+      if (!(row instanceof HTMLElement) || isOwnedNode(row) || !isVisible(row)) return false;
+      if (
+        quickChatPrimaryLabel
+        && quickChatRowClassName
+        && row.className === quickChatRowClassName
+        && row.textContent?.trim() === quickChatPrimaryLabel
+      ) {
+        return true;
+      }
+      if (
+        !row.classList.contains("flex")
+        || !row.classList.contains("items-center")
+        || !row.classList.contains("gap-1")
+      ) {
+        return false;
+      }
+      return Array.from(row.querySelectorAll("button, a")).some((candidate) => (
+        !isOwnedNode(candidate)
+        && isNewChatLabel(candidate.textContent)
+      ));
+    }
+
+    function chatNewChatRow(panel) {
+      const rows = Array.from(panel.querySelectorAll("div")).filter(rowLooksLikeNewChat);
+      rows.sort((left, right) => (
+        left.getBoundingClientRect().top - right.getBoundingClientRect().top
+      ));
+      return rows[0] ?? null;
+    }
+
+    function defaultQuickChatLabel() {
+      const language = document.documentElement.lang?.toLocaleLowerCase() ?? "";
+      if (language.startsWith("ja")) return "クイックチャット";
+      if (language.startsWith("ko")) return "빠른 채팅";
+      return "Quick chat";
+    }
+
+    function createQuickChatFallback() {
+      const branch = document.createElement("div");
+      branch.className = "pe-1";
+      branch.innerHTML = [
+        '<button class="codex-theme-quick-chat-button no-drag cursor-interaction items-center gap-1 border whitespace-nowrap select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0 disabled:cursor-default disabled:opacity-40 flex rounded-lg text-tertiary enabled:hover:bg-primary-ghost-hover data-[state=open]:bg-primary-ghost-hover border-transparent h-6 px-2 py-0 text-xs leading-4 aspect-square shrink-0 justify-center !px-0" type="button">',
+        '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">',
+        '<path d="M7.9834 5.3042C8.27312 5.30446 8.50879 5.5398 8.50879 5.82959V7.479H10.1582C10.4482 7.479 10.6836 7.71445 10.6836 8.00439C10.6836 8.29434 10.4482 8.52979 10.1582 8.52979H8.50879V10.1802C8.50853 10.4697 8.27296 10.7053 7.9834 10.7056C7.69361 10.7056 7.45827 10.4699 7.45801 10.1802V8.52979H5.80762C5.51767 8.52979 5.28223 8.29434 5.28223 8.00439C5.28223 7.71445 5.51767 7.479 5.80762 7.479H7.45801V5.82959C7.45801 5.53964 7.69345 5.3042 7.9834 5.3042Z" fill="currentColor"></path>',
+        '<path fill-rule="evenodd" clip-rule="evenodd" d="M8 1.80811C11.575 1.80811 14.5254 4.55306 14.5254 8.00049C14.5252 11.4478 11.5749 14.1919 8 14.1919C6.78477 14.1919 5.75932 13.8294 4.75488 13.3599L2.9873 13.8188C2.5113 13.9421 2.07317 13.5186 2.17969 13.0386L2.5498 11.3638C2.03641 10.3602 1.4747 9.38219 1.47461 8.00049C1.47461 4.55306 4.42502 1.80811 8 1.80811ZM8 2.85889C4.94756 2.85889 2.52539 5.18869 2.52539 8.00049C2.52548 9.13389 2.98018 9.88342 3.55176 11.0151C3.62017 11.1507 3.63938 11.3062 3.60645 11.4546L3.34277 12.6411L4.62598 12.3091L4.74023 12.2896C4.81669 12.2837 4.89333 12.2917 4.9668 12.312L5.0752 12.3521L5.44238 12.522C6.29248 12.8997 7.09158 13.1421 8 13.1421C11.0523 13.1421 13.4744 10.8121 13.4746 8.00049C13.4746 5.18869 11.0524 2.85889 8 2.85889Z" fill="currentColor"></path>',
+        "</svg>",
+        "</button>",
+      ].join("");
+      return sanitizeQuickChatTemplate(branch);
+    }
+
+    function isQuickChatStore(value) {
+      try {
+        return value != null
+          && typeof value === "object"
+          && typeof value.get === "function"
+          && typeof value.set === "function"
+          && typeof value.watch === "function"
+          && typeof value.when === "function"
+          && value.node != null
+          && value.chain != null;
+      } catch {
+        return false;
+      }
+    }
+
+    function quickChatStoreFromFiberTree() {
+      const root = currentReactFiberRoot();
+      if (root == null) return null;
+      const stack = [root];
+      const visitedFibers = new Set();
+      while (stack.length > 0 && visitedFibers.size < 100_000) {
+        const fiber = stack.pop();
+        if (fiber == null || visitedFibers.has(fiber)) continue;
+        visitedFibers.add(fiber);
+        let hook = fiber.memoizedState;
+        const visitedHooks = new Set();
+        while (hook != null && typeof hook === "object" && visitedHooks.size < 1_000) {
+          if (visitedHooks.has(hook)) break;
+          visitedHooks.add(hook);
+          const state = hook.memoizedState;
+          const candidates = [state, state?.current, hook.baseState, hook.baseState?.current];
+          const store = candidates.find(isQuickChatStore);
+          if (store != null) return store;
+          hook = hook.next;
+        }
+        if (fiber.sibling != null) stack.push(fiber.sibling);
+        if (fiber.child != null) stack.push(fiber.child);
+      }
+      return null;
+    }
+
+    function nativeQuickChatOpen(moduleNamespace) {
+      return Object.values(moduleNamespace).find((value) => {
+        if (typeof value !== "function") return false;
+        const source = Function.prototype.toString.call(value);
+        return source.includes("chatgpt.quick-chat")
+          && source.includes("projectId")
+          && source.includes("projectName")
+          && source.includes("hasConversation");
+      }) ?? null;
+    }
+
+    async function loadQuickChatRuntime() {
+      const testLoader = globalThis.__codexThemeQuickChatLoader;
+      if (typeof testLoader === "function") {
+        const loaded = await testLoader();
+        if (typeof loaded?.open !== "function") {
+          throw new Error("The Quick chat test loader returned an invalid runtime");
+        }
+        return loaded;
+      }
+      const appInitialPattern = /\/app-initial-[^/]+\.js(?:[?#]|$)/;
+      const appInitialUrl = resourceAssetUrl(appInitialPattern)
+        ?? linkedAssetUrl(appInitialPattern);
+      if (appInitialUrl == null) throw new Error("The Quick chat app runtime was not found");
+      const moduleNamespace = await import(appInitialUrl);
+      const open = nativeQuickChatOpen(moduleNamespace);
+      if (open == null) throw new Error("The native Quick chat command was not found");
+      return { appInitialUrl, open };
+    }
+
+    async function ensureQuickChatRuntime() {
+      if (quickChatRuntime != null) return quickChatRuntime;
+      if (quickChatRuntimePromise == null) {
+        quickChatRuntimePromise = loadQuickChatRuntime()
+          .then((loaded) => {
+            quickChatRuntime = loaded;
+            quickChatLastError = null;
+            diagnostics.quickChatBridgeLoads += 1;
+            return loaded;
+          })
+          .catch((error) => {
+            quickChatLastError = String(error?.stack || error);
+            diagnostics.quickChatBridgeLoadErrors += 1;
+            quickChatRuntimePromise = null;
+            throw error;
+          });
+      }
+      return quickChatRuntimePromise;
+    }
+
+    async function openQuickChatThroughApp() {
+      const runtime2 = await ensureQuickChatRuntime();
+      const store = quickChatStoreFromFiberTree();
+      if (store == null) throw new Error("The live Quick chat state store was not found");
+      return runtime2.open(store, {});
+    }
+
+    function openQuickChat(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        const result = typeof quickChatHandler === "function"
+          ? quickChatHandler(event)
+          : openQuickChatThroughApp();
+        diagnostics.quickChatOpens += 1;
+        if (result != null && typeof result.then === "function") {
+          Promise.resolve(result).catch((error) => {
+            quickChatLastError = String(error?.stack || error);
+            diagnostics.quickChatOpenErrors += 1;
+          });
+        }
+      } catch (error) {
+        quickChatLastError = String(error?.stack || error);
+        diagnostics.quickChatOpenErrors += 1;
+      }
+    }
+
+    function renderChatQuickChatButton() {
+      const panel = document.querySelector(".app-shell-left-panel");
+      const existing = document.getElementById(QUICK_CHAT_BUTTON_ID);
+      if (!(panel instanceof HTMLElement) || !usagePanelIsAllowed()) {
+        existing?.remove();
+        return;
+      }
+
+      const nativeButton = captureNativeQuickChat(panel);
+      if (nativeButton instanceof HTMLButtonElement) {
+        existing?.remove();
+        return;
+      }
+      const row = chatNewChatRow(panel);
+      if (!(row instanceof HTMLElement)) {
+        existing?.remove();
+        return;
+      }
+      if (existing instanceof HTMLElement && existing.parentElement === row) return;
+      existing?.remove();
+
+      const branch = quickChatTemplate instanceof HTMLElement
+        ? sanitizeQuickChatTemplate(quickChatTemplate.cloneNode(true))
+        : createQuickChatFallback();
+      if (!(branch instanceof HTMLElement)) return;
+      branch.id = QUICK_CHAT_BUTTON_ID;
+      const button = branch instanceof HTMLButtonElement ? branch : branch.querySelector("button");
+      if (!(button instanceof HTMLButtonElement)) return;
+      button.disabled = false;
+      const label = quickChatLabel || defaultQuickChatLabel();
+      button.setAttribute("aria-label", label);
+      button.setAttribute("title", label);
+      button.addEventListener("click", openQuickChat);
+      row.append(branch);
+      diagnostics.quickChatButtonsCreated += 1;
+    }
+
     /*
      * ChatGPT Work keeps the same turn-diff item as Codex, but STEPS_PROSE
      * intentionally skips the native card. Reuse the app's own component and
@@ -527,14 +853,80 @@ export function installPageRuntime(initialConfig) {
       return current == null && next != null ? next : current;
     }
 
+    function statusTurnInProgress(status) {
+      if (typeof status !== "string") return null;
+      const normalized = status.toLowerCase().replace(/[^a-z]/g, "");
+      if (["active", "inprogress", "running", "started", "streaming", "working"].includes(normalized)) {
+        return true;
+      }
+      if (
+        [
+          "cancelled",
+          "canceled",
+          "complete",
+          "completed",
+          "done",
+          "failed",
+          "interrupted",
+          "stopped",
+        ].includes(normalized)
+      ) {
+        return false;
+      }
+      return null;
+    }
+
+    function turnInProgressFromProps(props) {
+      if (props == null || typeof props !== "object") return null;
+      const explicit = [
+        props.isTurnInProgress,
+        props.turn?.isTurnInProgress,
+        props.turnState?.isTurnInProgress,
+      ].find((value) => typeof value === "boolean");
+      if (explicit != null) return explicit;
+      for (const status of [props.turn?.status, props.turnState?.status, props.turnStatus]) {
+        const inProgress = statusTurnInProgress(status);
+        if (inProgress != null) return inProgress;
+      }
+      for (const completed of [props.turn?.completed, props.turnState?.completed]) {
+        if (typeof completed === "boolean") return !completed;
+      }
+      return null;
+    }
+
+    function turnItemsFromProps(props) {
+      if (props == null || typeof props !== "object") return [];
+      return [props.items, props.turn?.items, props.turnState?.items, props.mcpTurn?.items]
+        .filter(Array.isArray)
+        .sort((left, right) => right.length - left.length)[0] ?? [];
+    }
+
+    function itemsLookInProgress(items) {
+      const streamingTypes = new Set([
+        "command-execution",
+        "dynamic-tool-call",
+        "mcp-tool-call",
+        "web-search",
+      ]);
+      return items.some((item) => {
+        if (item == null || typeof item !== "object" || !streamingTypes.has(item.type)) {
+          return false;
+        }
+        if (item.completed === false) return true;
+        return statusTurnInProgress(item.executionStatus ?? item.status) === true;
+      });
+    }
+
     function turnDiffContext(fiber, initialProps, item) {
-      let conversationDetailLevel = initialProps?.conversationDetailLevel ?? null;
+      let conversationDetailLevel = initialProps?.conversationDetailLevel
+        ?? initialProps?.threadDetailLevel
+        ?? null;
       let conversationId = initialProps?.conversationId
         ?? initialProps?.turn?.conversationId
         ?? initialProps?.turnState?.conversationId
         ?? null;
       let cwd = initialProps?.cwd
-        ?? item.cwd
+        ?? item?.cwd
         ?? initialProps?.turn?.cwd
         ?? initialProps?.turnState?.cwd
         ?? null;
@@ -546,12 +938,14 @@ export function installPageRuntime(initialConfig) {
         ?? initialProps?.turn?.id
         ?? initialProps?.turnState?.turnId
         ?? null;
+      let isTurnInProgress = turnInProgressFromProps(initialProps);
+      let turnItems = turnItemsFromProps(initialProps);
       for (let current = fiber?.return; current != null; current = current.return) {
         const props = fiberProps(current);
         if (props == null) continue;
         conversationDetailLevel = firstDefined(
           conversationDetailLevel,
-          props.conversationDetailLevel,
+          props.conversationDetailLevel ?? props.threadDetailLevel,
         );
         conversationId = firstDefined(
           conversationId,
@@ -560,8 +954,19 @@ export function installPageRuntime(initialConfig) {
         cwd = firstDefined(cwd, props.cwd ?? props.turn?.cwd ?? props.turnState?.cwd);
         hostId = firstDefined(hostId, props.hostId ?? props.turn?.hostId ?? props.turnState?.hostId);
         turnId = firstDefined(turnId, props.turnId ?? props.turn?.id ?? props.turnState?.turnId);
+        isTurnInProgress = firstDefined(isTurnInProgress, turnInProgressFromProps(props));
+        const candidateItems = turnItemsFromProps(props);
+        if (candidateItems.length > turnItems.length) turnItems = candidateItems;
       }
-      return { conversationDetailLevel, conversationId, cwd, hostId, turnId };
+      return {
+        conversationDetailLevel,
+        conversationId,
+        cwd,
+        hostId,
+        isTurnInProgress: isTurnInProgress ?? itemsLookInProgress(turnItems),
+        turnId,
+        turnItems,
+      };
     }
 
     function reactProviderFibers(fiber) {
@@ -764,6 +1169,34 @@ export function installPageRuntime(initialConfig) {
       diagnostics.nativeTurnDiffRenderErrors += 1;
     }
 
+    function assistantActionRow(host) {
+      if (!(host instanceof HTMLElement)) return null;
+      const rows = Array.from(host.querySelectorAll("div")).filter((element) => (
+        element instanceof HTMLElement
+        && !isOwnedNode(element)
+        && element.classList.contains("mt-1.5")
+        && element.classList.contains("h-5")
+        && element.classList.contains("items-center")
+        && element.classList.contains("justify-start")
+        && element.classList.contains("gap-0.5")
+      ));
+      return rows.at(-1) ?? null;
+    }
+
+    function placeNativeTurnDiffContainer(host, container) {
+      const actionRow = assistantActionRow(host);
+      if (actionRow?.parentElement instanceof HTMLElement) {
+        if (container.parentElement !== actionRow.parentElement
+          || container.nextElementSibling !== actionRow) {
+          actionRow.before(container);
+        }
+        return;
+      }
+      if (container.parentElement !== host || host.lastElementChild !== container) {
+        host.append(container);
+      }
+    }
+
     function mountNativeTurnDiff(runtime2, entry) {
       let record = nativeTurnDiffRoots.get(entry.key);
       if (
@@ -777,7 +1210,7 @@ export function installPageRuntime(initialConfig) {
         const container = markOwned(document.createElement("div"));
         container.setAttribute("data-codex-theme-native-turn-diff", "true");
         container.dataset.diffKey = entry.key;
-        entry.host.append(container);
+        placeNativeTurnDiffContainer(entry.host, container);
         const root = runtime2.createRoot(container, {
           onCaughtError: reportNativeTurnDiffRenderError,
           onUncaughtError: reportNativeTurnDiffRenderError,
@@ -786,6 +1219,7 @@ export function installPageRuntime(initialConfig) {
         record = { container, host: entry.host, root };
         nativeTurnDiffRoots.set(entry.key, record);
       }
+      placeNativeTurnDiffContainer(entry.host, record.container);
       try {
         record.root.render(nativeTurnDiffElement(runtime2, entry));
         diagnostics.nativeTurnDiffRenders += 1;
@@ -810,6 +1244,7 @@ export function installPageRuntime(initialConfig) {
         if (items.length > 0) {
           for (const item of items) {
             const context = turnDiffContext(fiber, props, item);
+            if (context.isTurnInProgress) continue;
             const host = chatTurnDiffHost(fiber, context);
             if (!(host instanceof HTMLElement)) continue;
             if (context.conversationId == null) continue;
@@ -896,6 +1331,408 @@ export function installPageRuntime(initialConfig) {
             scheduleChatTurnDiffRender();
           }
         });
+    }
+
+    function commandText(item) {
+      const candidates = [
+        item?.parsedCmd?.cmd,
+        item?.command,
+        item?.cmd,
+        item?.arguments?.command,
+      ];
+      for (const candidate of candidates) {
+        if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+        if (Array.isArray(candidate) && candidate.length > 0) {
+          return candidate.map(String).join(" ").trim();
+        }
+      }
+      return "";
+    }
+
+    function redactCommand(value) {
+      const secretName = "(?:[A-Z0-9_]*(?:API_?KEY|ACCESS_?TOKEN|AUTHORIZATION|BEARER|COOKIE|CREDENTIALS?|PASSWORD|PASSWD|SECRET|TOKEN)[A-Z0-9_]*)";
+      const secretFlag = "(?:api[-_]?key|access[-_]?token|authorization|bearer|cookie|credentials?|password|passwd|secret|token)";
+      const argument = '(?:"[^"\\n]*"|\'[^\'\\n]*\'|[^\\s]+)';
+      return String(value)
+        .replace(new RegExp(`\\b(${secretName})=(${argument})`, "gi"), "$1=<redacted>")
+        .replace(new RegExp(`(--${secretFlag})(?:=|\\s+)(${argument})`, "gi"), "$1 <redacted>");
+    }
+
+    function diffPaths(unifiedDiff) {
+      if (typeof unifiedDiff !== "string") return [];
+      const paths = [];
+      for (const match of unifiedDiff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)) {
+        const before = match[1]?.trim();
+        const after = match[2]?.trim();
+        if (before) paths.push(before);
+        if (after && after !== before) paths.push(after);
+      }
+      return paths;
+    }
+
+    function fencedCodeBlocks(content) {
+      if (typeof content !== "string") return [];
+      const blocks = [];
+      for (const match of content.matchAll(/```([^\n`]*)\n([\s\S]*?)```/g)) {
+        blocks.push({
+          code: redactCommand(match[2].trim()),
+          language: match[1].trim(),
+        });
+      }
+      return blocks;
+    }
+
+    function addUnique(values, seen, value, limit = 100) {
+      if (values.length >= limit || value == null) return;
+      const text = String(value).trim();
+      if (!text || seen.has(text)) return;
+      seen.add(text);
+      values.push(text.slice(0, 8_000));
+    }
+
+    function workTechnicalDetails(items) {
+      const details = {
+        commands: [],
+        files: [],
+        planCode: [],
+        planSteps: [],
+        searches: [],
+        tools: [],
+      };
+      const seen = Object.fromEntries(
+        Object.keys(details).map((key) => [key, new Set()]),
+      );
+      for (const item of items.slice(0, 500)) {
+        if (item == null || typeof item !== "object") continue;
+        const command = commandText(item);
+        if (command) addUnique(details.commands, seen.commands, redactCommand(command));
+
+        for (const path of [item.path, item.filePath, item.fsPath, item.parsedCmd?.path]) {
+          addUnique(details.files, seen.files, path);
+        }
+        for (const change of Array.isArray(item.changes) ? item.changes : []) {
+          addUnique(details.files, seen.files, change?.path ?? change?.filePath);
+        }
+        for (const path of diffPaths(item.unifiedDiff)) {
+          addUnique(details.files, seen.files, path);
+        }
+
+        if (item.type === "proposed-plan") {
+          const content = item.content ?? item.plan ?? item.text;
+          for (const block of fencedCodeBlocks(content)) {
+            const key = `${block.language}\n${block.code}`;
+            if (seen.planCode.has(key) || details.planCode.length >= 30) continue;
+            seen.planCode.add(key);
+            details.planCode.push(block);
+          }
+        }
+
+        if (["todo-list", "plan", "proposed-plan"].includes(item.type)) {
+          const steps = [item.items, item.steps, item.todos, item.plan]
+            .find(Array.isArray) ?? [];
+          for (const step of steps) {
+            const text = typeof step === "string"
+              ? step
+              : step?.step ?? step?.text ?? step?.content ?? step?.title;
+            const status = typeof step === "object"
+              ? step?.status ?? step?.state
+              : null;
+            addUnique(
+              details.planSteps,
+              seen.planSteps,
+              status && text ? `[${status}] ${text}` : text,
+            );
+          }
+        }
+
+        if (["dynamic-tool-call", "mcp-tool-call"].includes(item.type)) {
+          const server = item.server ?? item.serverName ?? item.mcpServer;
+          const tool = item.tool ?? item.toolName ?? item.name;
+          addUnique(details.tools, seen.tools, [server, tool].filter(Boolean).join(" · "));
+        }
+
+        if (item.type === "web-search") {
+          for (const query of [
+            item.query,
+            item.searchQuery,
+            ...(Array.isArray(item.queries) ? item.queries : []),
+          ]) {
+            addUnique(details.searches, seen.searches, query?.q ?? query);
+          }
+        }
+      }
+      return details;
+    }
+
+    function workTechnicalDetailsCount(details) {
+      return details.commands.length
+        + details.files.length
+        + details.planCode.length
+        + details.planSteps.length
+        + details.searches.length
+        + details.tools.length;
+    }
+
+    function appendWorkDetailSection(body, title, values, { code = false } = {}) {
+      if (values.length === 0) return;
+      const section = document.createElement("section");
+      section.className = "codex-theme-work-details-section";
+      const heading = document.createElement("h4");
+      heading.textContent = title;
+      section.append(heading);
+      for (const value of values) {
+        const row = document.createElement(code ? "pre" : "div");
+        row.className = code
+          ? "codex-theme-work-details-code"
+          : "codex-theme-work-details-row";
+        if (code && typeof value === "object") {
+          if (value.language) row.dataset.language = value.language;
+          row.textContent = value.code;
+        } else {
+          row.textContent = String(value);
+        }
+        section.append(row);
+      }
+      body.append(section);
+    }
+
+    function createWorkTechnicalDetailsNode(entry, open = false) {
+      const panel = markOwned(document.createElement("details"));
+      panel.className = "codex-theme-work-details";
+      panel.setAttribute("data-codex-theme-work-details", "true");
+      panel.dataset.detailKey = entry.key;
+      panel.open = open;
+
+      const summary = document.createElement("summary");
+      const title = document.createElement("span");
+      title.className = "codex-theme-work-details-title";
+      title.textContent = "Codex details";
+      const meta = document.createElement("span");
+      meta.className = "codex-theme-work-details-meta";
+      const count = workTechnicalDetailsCount(entry.details);
+      meta.textContent = `${entry.context.isTurnInProgress ? "Working · " : ""}${count} item${count === 1 ? "" : "s"}`;
+      summary.append(title, meta);
+      panel.append(summary);
+
+      const body = document.createElement("div");
+      body.className = "codex-theme-work-details-body";
+      appendWorkDetailSection(body, "Commands", entry.details.commands, { code: true });
+      appendWorkDetailSection(body, "Files", entry.details.files, { code: true });
+      appendWorkDetailSection(body, "Plan steps", entry.details.planSteps);
+      appendWorkDetailSection(body, "Plan code", entry.details.planCode, { code: true });
+      appendWorkDetailSection(body, "Tools", entry.details.tools, { code: true });
+      appendWorkDetailSection(body, "Web searches", entry.details.searches);
+      panel.append(body);
+      return panel;
+    }
+
+    function discoverWorkTechnicalDetails() {
+      const root = currentReactFiberRoot();
+      if (root == null) return new Map();
+      const discovered = new Map();
+      const stack = [root];
+      const visited = new Set();
+      while (stack.length > 0 && visited.size < 100_000) {
+        const fiber = stack.pop();
+        if (fiber == null || visited.has(fiber)) continue;
+        visited.add(fiber);
+        const props = fiberProps(fiber);
+        const items = turnItemsFromProps(props);
+        if (items.length > 0) {
+          const context = turnDiffContext(fiber, props, null);
+          if (
+            context.conversationDetailLevel === "STEPS_PROSE"
+            && context.conversationId != null
+            && context.turnId != null
+          ) {
+            const host = chatTurnDiffHost(fiber, context);
+            const details = workTechnicalDetails(context.turnItems);
+            const count = workTechnicalDetailsCount(details);
+            if (host instanceof HTMLElement && count > 0) {
+              const key = `${context.conversationId}:${context.turnId}`;
+              const signature = hashText(JSON.stringify({
+                details,
+                isTurnInProgress: context.isTurnInProgress,
+              }));
+              const score = context.turnItems.length + count * 10;
+              const previous = discovered.get(key);
+              if (previous == null || score > previous.score) {
+                discovered.set(key, { context, details, host, key, score, signature });
+              }
+            }
+          }
+        }
+        if (fiber.sibling != null) stack.push(fiber.sibling);
+        if (fiber.child != null) stack.push(fiber.child);
+      }
+      return discovered;
+    }
+
+    function renderWorkTechnicalDetails() {
+      if (disposed || !document.documentElement) return;
+      const discovered = discoverWorkTechnicalDetails();
+      for (const [key, record] of workTechnicalDetailNodes) {
+        const entry = discovered.get(key);
+        if (entry != null && entry.host === record.host && record.node.isConnected) continue;
+        record.node.remove();
+        workTechnicalDetailNodes.delete(key);
+        diagnostics.workTechnicalDetailRemovals += 1;
+      }
+      for (const entry of discovered.values()) {
+        const previous = workTechnicalDetailNodes.get(entry.key);
+        if (
+          previous != null
+          && previous.host === entry.host
+          && previous.signature === entry.signature
+          && previous.node.isConnected
+        ) {
+          continue;
+        }
+        const open = previous?.node?.open === true;
+        const node = createWorkTechnicalDetailsNode(entry, open);
+        if (previous?.node?.isConnected) previous.node.replaceWith(node);
+        else entry.host.append(node);
+        workTechnicalDetailNodes.set(entry.key, {
+          host: entry.host,
+          node,
+          signature: entry.signature,
+        });
+        diagnostics.workTechnicalDetailRenders += 1;
+      }
+    }
+
+    function commandEntryForElement(element) {
+      for (let current = reactFiberForElement(element); current != null; current = current.return) {
+        const props = fiberProps(current);
+        const item = props?.item;
+        if (
+          item != null
+          && typeof item === "object"
+          && ["command-execution", "exec"].includes(item.type)
+          && commandText(item)
+        ) {
+          return { context: turnDiffContext(current, props, item), fiber: current, item };
+        }
+      }
+      return null;
+    }
+
+    function commandSummaryFromHeader(header) {
+      const summary = Array.from(header.querySelectorAll("span")).find((element) => (
+        element instanceof HTMLElement
+        && element.classList.contains("min-w-0")
+        && element.classList.contains("truncate")
+      ));
+      return summary instanceof HTMLElement ? summary : null;
+    }
+
+    function commandSummaryNode(body, host) {
+      for (
+        let current = body.parentElement;
+        current instanceof HTMLElement && host.contains(current);
+        current = current.parentElement
+      ) {
+        const header = Array.from(current.querySelectorAll("div")).find((element) => (
+          element instanceof HTMLElement
+          && element.classList.contains("group/activity-header")
+          && !element.contains(body)
+        ));
+        if (!(header instanceof HTMLElement)) continue;
+        const summary = commandSummaryFromHeader(header);
+        if (summary != null) return summary;
+      }
+      return null;
+    }
+
+    function commandSummaryTextNode(summary) {
+      const walker = document.createTreeWalker(summary, NodeFilter.SHOW_TEXT);
+      const candidates = [];
+      let node;
+      while ((node = walker.nextNode())) {
+        if (node.nodeValue?.trim()) candidates.push(node);
+      }
+      return candidates.sort((left, right) => (
+        right.nodeValue.trim().length - left.nodeValue.trim().length
+      ))[0] ?? null;
+    }
+
+    function commandTextWithNativeWhitespace(originalText, command) {
+      const leading = originalText.match(/^\s*/)?.[0] ?? "";
+      const trailing = originalText.match(/\s*$/)?.[0] ?? "";
+      return `${leading}${command}${trailing}`;
+    }
+
+    function restoreWorkCommandSummary(node, record = workCommandSummaryNodes.get(node)) {
+      if (
+        record?.textNode?.isConnected
+        && record.textNode.nodeValue === record.renderedText
+      ) {
+        record.textNode.nodeValue = record.originalText;
+      }
+      removeAttributeIfPresent(node, "data-codex-theme-work-command-summary");
+      removeAttributeIfPresent(node, "data-codex-theme-work-command");
+      diagnostics.workCommandSummaryRestores += 1;
+    }
+
+    function renderWorkCommandSummaries() {
+      const desired = new Map();
+      const candidates = new Set([
+        ...document.querySelectorAll('[data-testid="exec-shell-body"]'),
+        ...document.getElementsByClassName("group/activity-header"),
+      ]);
+      for (const candidate of candidates) {
+        if (!(candidate instanceof HTMLElement) || isOwnedNode(candidate)) continue;
+        const entry = commandEntryForElement(candidate);
+        if (entry?.context.conversationDetailLevel !== "STEPS_PROSE") continue;
+        const host = chatTurnDiffHost(entry.fiber, entry.context);
+        if (!(host instanceof HTMLElement)) continue;
+        const summary = candidate.classList.contains("group/activity-header")
+          ? commandSummaryFromHeader(candidate)
+          : commandSummaryNode(candidate, host);
+        if (!(summary instanceof HTMLElement)) continue;
+        const command = redactCommand(commandText(entry.item));
+        const textNode = commandSummaryTextNode(summary);
+        if (command && textNode != null) desired.set(summary, { command, textNode });
+      }
+
+      for (const [node] of workCommandSummaryNodes) {
+        if (desired.has(node) && node.isConnected) continue;
+        restoreWorkCommandSummary(node);
+        workCommandSummaryNodes.delete(node);
+      }
+
+      for (const [node, desiredEntry] of desired) {
+        const { command, textNode } = desiredEntry;
+        let record = workCommandSummaryNodes.get(node);
+        if (record != null && record.textNode !== textNode) {
+          restoreWorkCommandSummary(node, record);
+          workCommandSummaryNodes.delete(node);
+          record = null;
+        }
+        if (record == null) {
+          record = {
+            command,
+            originalText: textNode.nodeValue,
+            renderedText: "",
+            textNode,
+          };
+          workCommandSummaryNodes.set(node, record);
+          diagnostics.workCommandSummaryReveals += 1;
+        } else if (textNode.nodeValue !== record.renderedText) {
+          record.originalText = textNode.nodeValue;
+        }
+        record.command = command;
+        record.renderedText = commandTextWithNativeWhitespace(record.originalText, command);
+        if (textNode.nodeValue !== record.renderedText) textNode.nodeValue = record.renderedText;
+        setAttributeIfChanged(node, "data-codex-theme-work-command-summary", "true");
+        setAttributeIfChanged(node, "data-codex-theme-work-command", command.slice(0, 8_000));
+      }
+    }
+
+    function scheduleWorkModeEnhancements() {
+      scheduleChatTurnDiffRender();
+      renderWorkCommandSummaries();
+      renderWorkTechnicalDetails();
     }
 
     function serverSignalBars(latency) {
@@ -1160,20 +1997,6 @@ export function installPageRuntime(initialConfig) {
       context.clearRect(0, 0, cssWidth, cssHeight);
 
       const metricsKey = `${Math.round(cssWidth * 10)}x${Math.round(cssHeight * 10)}`;
-      const surfaceStyle = getComputedStyle(composerSurface);
-      const measuredRadius = Number.parseFloat(surfaceStyle.borderTopLeftRadius)
-        || Number.parseFloat(surfaceStyle.borderRadius)
-        || Math.min(25, cssHeight / 2);
-      const clippedRadius = Math.min(
-        Math.max(measuredRadius, 0),
-        cssWidth / 2,
-        cssHeight / 2,
-      );
-      setStylePropertyIfChanged(
-        composerCanvas,
-        "--codex-theme-composer-radius",
-        `${clippedRadius}px`,
-      );
       const segmentCount = Math.min(480, Math.max(180, Math.ceil(cssWidth / 3)));
       const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
       const duration = reducedMotion ? 8_000 : 2_400;
@@ -1643,12 +2466,13 @@ export function installPageRuntime(initialConfig) {
       diagnostics.structureReconciles += 1;
       ensureStyle();
       renderUsagePanel();
+      renderChatQuickChatButton();
       renderServerLatencies();
       const nextComposerSurface = findComposerSurface();
       if (nextComposerSurface !== composerSurface) setComposerSurface(nextComposerSurface);
       const nextFireSurface = findMainSurface();
       if (nextFireSurface !== fireSurface) setFireSurface(nextFireSurface);
-      scheduleChatTurnDiffRender();
+      scheduleWorkModeEnhancements();
       scheduleActivity("structure");
     }
 
@@ -1749,9 +2573,11 @@ export function installPageRuntime(initialConfig) {
         diagnostics.installs += 1;
         if (document.documentElement) installObserver();
         activityTimer = setInterval(scheduleActivity, ACTIVITY_REFRESH_MS);
-        usageTimer = setInterval(refreshUsage, USAGE_REFRESH_MS);
+        if (config.usageManagedByHost !== true) {
+          usageTimer = setInterval(refreshUsage, USAGE_REFRESH_MS);
+        }
         chatTurnDiffTimer = setInterval(
-          scheduleChatTurnDiffRender,
+          scheduleWorkModeEnhancements,
           CHAT_TURN_DIFF_REFRESH_MS,
         );
         if (document.readyState === "loading") {
@@ -1764,7 +2590,7 @@ export function installPageRuntime(initialConfig) {
           };
           document.addEventListener("DOMContentLoaded", domReadyHandler, { once: true });
         }
-        void refreshUsage();
+        if (config.usageManagedByHost !== true) void refreshUsage();
       }
       refresh("install");
       return {
@@ -1833,6 +2659,7 @@ export function installPageRuntime(initialConfig) {
         },
         nodes: {
           usagePanels: document.querySelectorAll(`#${USAGE_PANEL_ID}`).length,
+          chatQuickChatButtons: document.querySelectorAll(`#${QUICK_CHAT_BUTTON_ID}`).length,
           composerCanvases: document.querySelectorAll(".codex-theme-rainbow-canvas").length,
           fireLayers: document.querySelectorAll(".codex-theme-thumb-fire-layer").length,
           fireImages: document.querySelectorAll(".codex-theme-thumb-fire").length,
@@ -1841,11 +2668,22 @@ export function installPageRuntime(initialConfig) {
             '[data-codex-theme-native-turn-diff="true"]',
           ).length,
           nativeTurnDiffCards: nativeTurnDiffRoots.size,
+          workCommandSummaries: workCommandSummaryNodes.size,
+          workTechnicalDetails: workTechnicalDetailNodes.size,
         },
         nativeTurnDiff: {
           loaded: nativeTurnDiffRuntime != null,
           loading: nativeTurnDiffRuntimePromise != null && nativeTurnDiffRuntime == null,
           lastError: nativeTurnDiffLastError,
+        },
+        quickChat: {
+          handlerCaptured: typeof quickChatHandler === "function",
+          bridgeLoaded: quickChatRuntime != null,
+          bridgeLoading: quickChatRuntimePromise != null && quickChatRuntime == null,
+          liveStoreFound: quickChatStoreFromFiberTree() != null,
+          lastError: quickChatLastError,
+          label: quickChatLabel || null,
+          primaryLabel: quickChatPrimaryLabel || null,
         },
         usage: {
           value: uiState.usage,
@@ -1901,10 +2739,25 @@ export function installPageRuntime(initialConfig) {
       for (const [key, record] of nativeTurnDiffRoots) {
         removeNativeTurnDiffRoot(key, record);
       }
+      for (const [node] of workCommandSummaryNodes) {
+        restoreWorkCommandSummary(node);
+      }
+      workCommandSummaryNodes.clear();
+      for (const record of workTechnicalDetailNodes.values()) record.node.remove();
+      workTechnicalDetailNodes.clear();
       nativeTurnDiffRuntime = null;
       nativeTurnDiffRuntimePromise = null;
       nativeTurnDiffRenderInFlight = false;
       nativeTurnDiffRenderRequested = false;
+      document.getElementById(QUICK_CHAT_BUTTON_ID)?.remove();
+      quickChatHandler = null;
+      quickChatTemplate = null;
+      quickChatLabel = "";
+      quickChatPrimaryLabel = "";
+      quickChatRowClassName = "";
+      quickChatRuntime = null;
+      quickChatRuntimePromise = null;
+      quickChatLastError = null;
       if (composerSurface instanceof HTMLElement) {
         removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-composer");
         removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-active");

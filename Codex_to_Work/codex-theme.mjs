@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-// src/main.mjs
-import { spawn } from "node:child_process";
+// Codex_to_Work/src/main.mjs
+import { spawn as spawn2 } from "node:child_process";
 import fs2 from "node:fs";
 import path2 from "node:path";
 import { fileURLToPath } from "node:url";
 
-// src/host/cdp-pipe.mjs
+// Codex_to_Work/src/host/cdp-pipe.mjs
 var CdpPipe = class {
   constructor(child, { requestTimeoutMs = 15e3 } = {}) {
     this.child = child;
@@ -71,7 +71,10 @@ var CdpPipe = class {
   }
 };
 
-// src/host/support.mjs
+// Codex_to_Work/src/host/rate-limit-client.mjs
+import { spawn } from "node:child_process";
+
+// Codex_to_Work/src/host/support.mjs
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -241,9 +244,11 @@ async function measurePinnedSshLatencies(hosts) {
   return Object.fromEntries(entries);
 }
 function normalizeUsagePayload(payload, capturedAtMs = Date.now()) {
-  const rateLimit = payload?.rate_limit;
-  if (rateLimit == null || typeof rateLimit !== "object") return null;
-  const windows = [rateLimit.primary_window, rateLimit.secondary_window].filter((window2) => window2 != null && Number.isFinite(Number(window2.used_percent))).map((window2) => ({
+  const rateLimits = [
+    payload?.rate_limit,
+    ...Array.isArray(payload?.additional_rate_limits) ? payload.additional_rate_limits.map((limit) => limit?.rate_limit) : []
+  ].filter((rateLimit) => rateLimit != null && typeof rateLimit === "object");
+  const windows = rateLimits.flatMap((rateLimit) => [rateLimit.primary_window, rateLimit.secondary_window]).filter((window2) => window2 != null && Number.isFinite(Number(window2.used_percent))).map((window2) => ({
     usedPercent: Number(window2.used_percent),
     windowSeconds: Number(window2.limit_window_seconds) || 0,
     resetAtSeconds: Number(window2.reset_at)
@@ -252,6 +257,30 @@ function normalizeUsagePayload(payload, capturedAtMs = Date.now()) {
   const limitingWindow = windows.reduce((current, candidate) => {
     if (candidate.usedPercent > current.usedPercent) return candidate;
     if (candidate.usedPercent === current.usedPercent && candidate.windowSeconds > current.windowSeconds) {
+      return candidate;
+    }
+    return current;
+  });
+  return {
+    remainingPercent: Math.round(
+      Math.min(100, Math.max(0, 100 - limitingWindow.usedPercent))
+    ),
+    resetAtMs: Number.isFinite(limitingWindow.resetAtSeconds) ? limitingWindow.resetAtSeconds * 1e3 : null,
+    capturedAtMs
+  };
+}
+function normalizeAppServerRateLimits(payload, capturedAtMs = Date.now()) {
+  const snapshot = payload?.rateLimitsByLimitId?.codex ?? payload?.rateLimits;
+  if (snapshot == null || typeof snapshot !== "object") return null;
+  const windows = [snapshot.primary, snapshot.secondary].filter((window2) => window2 != null && Number.isFinite(Number(window2.usedPercent))).map((window2) => ({
+    usedPercent: Number(window2.usedPercent),
+    windowMinutes: Number(window2.windowDurationMins) || 0,
+    resetAtSeconds: Number(window2.resetsAt)
+  }));
+  if (windows.length === 0) return null;
+  const limitingWindow = windows.reduce((current, candidate) => {
+    if (candidate.usedPercent > current.usedPercent) return candidate;
+    if (candidate.usedPercent === current.usedPercent && candidate.windowMinutes > current.windowMinutes) {
       return candidate;
     }
     return current;
@@ -285,7 +314,161 @@ function writeUsageCache(cachePath, usage) {
   }
 }
 
-// src/host/target-controller.mjs
+// Codex_to_Work/src/host/rate-limit-client.mjs
+var DEFAULT_REQUEST_TIMEOUT_MS = 1e4;
+var AppServerRateLimitClient = class {
+  constructor(executablePath, {
+    requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    spawnProcess = spawn
+  } = {}) {
+    this.executablePath = executablePath;
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.spawnProcess = spawnProcess;
+    this.child = null;
+    this.startPromise = null;
+    this.stdoutBuffer = "";
+    this.stderrBuffer = "";
+    this.nextRequestId = 1;
+    this.pendingRequests = /* @__PURE__ */ new Map();
+  }
+  async read(capturedAtMs = Date.now()) {
+    await this.ensureStarted();
+    try {
+      const response = await this.request("account/rateLimits/read", null);
+      const usage = normalizeAppServerRateLimits(response, capturedAtMs);
+      if (usage == null) throw new Error("Codex 앱 서버의 한도 응답 형식이 올바르지 않습니다");
+      return usage;
+    } catch (error) {
+      this.close();
+      throw error;
+    }
+  }
+  async ensureStarted() {
+    if (this.child != null && this.child.exitCode == null) return;
+    if (this.startPromise != null) return this.startPromise;
+    this.startPromise = this.start().finally(() => {
+      this.startPromise = null;
+    });
+    return this.startPromise;
+  }
+  async start() {
+    const child = this.spawnProcess(
+      this.executablePath,
+      ["app-server", "--listen", "stdio://"],
+      { stdio: ["pipe", "pipe", "pipe"] }
+    );
+    this.child = child;
+    this.stdoutBuffer = "";
+    this.stderrBuffer = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => this.handleStdout(chunk));
+    child.stderr.on("data", (chunk) => {
+      this.stderrBuffer = `${this.stderrBuffer}${chunk}`.slice(-4e3);
+    });
+    child.once("error", (error) => this.handleTermination(error));
+    child.once("exit", (code, signal) => {
+      if (this.child !== child) return;
+      const detail = this.stderrBuffer.trim();
+      const reason = signal ? `Codex 앱 서버가 ${signal} 신호로 종료되었습니다` : `Codex 앱 서버가 종료되었습니다. 코드=${code ?? "unknown"}`;
+      this.handleTermination(new Error(detail ? `${reason}: ${detail}` : reason));
+    });
+    try {
+      await this.request("initialize", {
+        clientInfo: {
+          name: "codex-theme",
+          title: "Codex Theme",
+          version: "2.0.0"
+        }
+      });
+      this.notify("initialized");
+    } catch (error) {
+      this.close();
+      throw error;
+    }
+  }
+  request(method, params) {
+    const child = this.child;
+    if (child == null || child.exitCode != null || !child.stdin.writable) {
+      return Promise.reject(new Error("Codex 앱 서버 연결이 열려 있지 않습니다"));
+    }
+    const id = this.nextRequestId++;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`Codex 앱 서버 요청 시간이 초과되었습니다: ${method}`));
+      }, this.requestTimeoutMs);
+      this.pendingRequests.set(id, { method, reject, resolve, timeout });
+      child.stdin.write(`${JSON.stringify({ id, method, params })}
+`, (error) => {
+        if (error == null) return;
+        const pending = this.pendingRequests.get(id);
+        if (pending == null) return;
+        clearTimeout(pending.timeout);
+        this.pendingRequests.delete(id);
+        pending.reject(error);
+      });
+    });
+  }
+  notify(method, params) {
+    const child = this.child;
+    if (child == null || child.exitCode != null || !child.stdin.writable) return false;
+    child.stdin.write(`${JSON.stringify(params === void 0 ? { method } : { method, params })}
+`);
+    return true;
+  }
+  handleStdout(chunk) {
+    this.stdoutBuffer += chunk;
+    while (true) {
+      const newlineIndex = this.stdoutBuffer.indexOf("\n");
+      if (newlineIndex < 0) break;
+      const line = this.stdoutBuffer.slice(0, newlineIndex).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
+      if (!line) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const pending = this.pendingRequests.get(message?.id);
+      if (pending == null) continue;
+      clearTimeout(pending.timeout);
+      this.pendingRequests.delete(message.id);
+      if (message.error != null) {
+        pending.reject(new Error(
+          message.error.message || `Codex 앱 서버 요청이 실패했습니다: ${pending.method}`
+        ));
+      } else {
+        pending.resolve(message.result);
+      }
+    }
+  }
+  handleTermination(error) {
+    this.child = null;
+    this.stdoutBuffer = "";
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
+    this.pendingRequests.clear();
+  }
+  close() {
+    const child = this.child;
+    this.child = null;
+    this.startPromise = null;
+    this.stdoutBuffer = "";
+    const error = new Error("Codex 앱 서버 연결을 닫았습니다");
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
+    this.pendingRequests.clear();
+    if (child != null && child.exitCode == null && !child.killed) child.kill("SIGTERM");
+  }
+};
+
+// Codex_to_Work/src/host/target-controller.mjs
 function isCodexPage(targetInfo) {
   if (targetInfo?.type !== "page") return false;
   const url = targetInfo.url ?? "";
@@ -491,7 +674,7 @@ var TargetController = class {
   }
 };
 
-// src/page/runtime.mjs
+// Codex_to_Work/src/page/runtime.mjs
 function installPageRuntime(initialConfig) {
   const RUNTIME_KEY = "__codexThemeRuntime";
   const requestedVersion = Number(initialConfig?.version) || 1;
@@ -527,6 +710,7 @@ function installPageRuntime(initialConfig) {
   function createRuntime(startingConfig, retained) {
     const STYLE_ID = "codex-theme-style";
     const USAGE_PANEL_ID = "codex-theme-usage-panel";
+    const QUICK_CHAT_BUTTON_ID = "codex-theme-chat-quick-chat";
     const OWNED_ATTRIBUTE = "data-codex-theme-owned";
     const USAGE_CACHE_KEY = "codex-theme-usage-cache";
     const USAGE_REFRESH_MS = 60 * 1e3;
@@ -577,6 +761,14 @@ function installPageRuntime(initialConfig) {
     let usageFetchInFlight = null;
     let activityState = null;
     let usageActivityActiveUntil = 0;
+    let quickChatHandler = null;
+    let quickChatTemplate = null;
+    let quickChatLabel = "";
+    let quickChatPrimaryLabel = "";
+    let quickChatRowClassName = "";
+    let quickChatRuntime = null;
+    let quickChatRuntimePromise = null;
+    let quickChatLastError = null;
     let composerSurface = null;
     let composerCanvas = null;
     let composerResizeObserver = null;
@@ -619,7 +811,13 @@ function installPageRuntime(initialConfig) {
       workCommandSummaryReveals: 0,
       workCommandSummaryRestores: 0,
       workTechnicalDetailRenders: 0,
-      workTechnicalDetailRemovals: 0
+      workTechnicalDetailRemovals: 0,
+      quickChatHandlerCaptures: 0,
+      quickChatBridgeLoads: 0,
+      quickChatBridgeLoadErrors: 0,
+      quickChatButtonsCreated: 0,
+      quickChatOpens: 0,
+      quickChatOpenErrors: 0
     };
     loadCachedUsage();
     const runtime2 = {
@@ -690,9 +888,11 @@ function installPageRuntime(initialConfig) {
       return style;
     }
     function normalizeUsagePayload2(payload) {
-      const rateLimit = payload?.rate_limit;
-      if (rateLimit == null || typeof rateLimit !== "object") return null;
-      const windows = [rateLimit.primary_window, rateLimit.secondary_window].filter((window2) => window2 != null && Number.isFinite(Number(window2.used_percent))).map((window2) => ({
+      const rateLimits = [
+        payload?.rate_limit,
+        ...Array.isArray(payload?.additional_rate_limits) ? payload.additional_rate_limits.map((limit) => limit?.rate_limit) : []
+      ].filter((rateLimit) => rateLimit != null && typeof rateLimit === "object");
+      const windows = rateLimits.flatMap((rateLimit) => [rateLimit.primary_window, rateLimit.secondary_window]).filter((window2) => window2 != null && Number.isFinite(Number(window2.used_percent))).map((window2) => ({
         usedPercent: Number(window2.used_percent),
         windowSeconds: Number(window2.limit_window_seconds) || 0,
         resetAtSeconds: Number(window2.reset_at)
@@ -874,6 +1074,235 @@ function installPageRuntime(initialConfig) {
       }
       if (panel.title !== formatted.title) panel.title = formatted.title;
       setAttributeIfChanged(panel, "aria-label", formatted.title);
+    }
+    function reactEventProps(element) {
+      if (!(element instanceof Element)) return null;
+      for (const key of Object.getOwnPropertyNames(element)) {
+        if (!key.startsWith("__reactProps$")) continue;
+        const props = element[key];
+        if (props != null && typeof props === "object") return props;
+      }
+      return fiberProps(reactFiberForElement(element));
+    }
+    function isQuickChatButton(button) {
+      if (!(button instanceof HTMLButtonElement) || isOwnedNode(button) || !isVisible(button)) {
+        return false;
+      }
+      if (button.querySelector('path[d^="M7.9834 5.3042"]')) return true;
+      const label = button.getAttribute("aria-label")?.toLocaleLowerCase() ?? "";
+      const normalized = label.replace(/[\s_-]+/g, "");
+      return normalized.includes("quickchat") || normalized.includes("クイックチャット") || normalized.includes("빠른채팅");
+    }
+    function quickChatRow(button, panel) {
+      for (let current = button.parentElement; current != null && current !== panel; current = current.parentElement) {
+        if (current instanceof HTMLElement && current.classList.contains("flex") && current.classList.contains("items-center") && current.classList.contains("gap-1")) {
+          return current;
+        }
+      }
+      return null;
+    }
+    function directChildWithin(element, ancestor) {
+      let current = element;
+      while (current.parentElement != null && current.parentElement !== ancestor) {
+        current = current.parentElement;
+      }
+      return current.parentElement === ancestor ? current : null;
+    }
+    function sanitizeQuickChatTemplate(template) {
+      if (!(template instanceof HTMLElement)) return null;
+      for (const element of [template, ...template.querySelectorAll("*")]) {
+        element.removeAttribute("id");
+        element.removeAttribute("aria-describedby");
+        element.removeAttribute("data-state");
+      }
+      markOwned(template);
+      return template;
+    }
+    function captureNativeQuickChat(panel) {
+      const nativeButton = Array.from(panel.querySelectorAll("button")).find(isQuickChatButton);
+      if (!(nativeButton instanceof HTMLButtonElement)) return null;
+      const row = quickChatRow(nativeButton, panel);
+      const branch = row == null ? null : directChildWithin(nativeButton, row);
+      const onClick = reactEventProps(nativeButton)?.onClick;
+      if (!(row instanceof HTMLElement) || !(branch instanceof HTMLElement) || typeof onClick !== "function") {
+        return nativeButton;
+      }
+      if (quickChatHandler !== onClick) diagnostics.quickChatHandlerCaptures += 1;
+      quickChatHandler = onClick;
+      quickChatTemplate = sanitizeQuickChatTemplate(branch.cloneNode(true));
+      quickChatLabel = nativeButton.getAttribute("aria-label")?.trim() || "Quick chat";
+      quickChatPrimaryLabel = row.textContent?.trim() ?? "";
+      quickChatRowClassName = row.className;
+      return nativeButton;
+    }
+    function normalizedQuickChatText(value) {
+      return String(value ?? "").toLocaleLowerCase().replace(/[\s_\-:：。、・!！?？()\[\]{}]+/g, "");
+    }
+    function isNewChatLabel(value) {
+      const normalized = normalizedQuickChatText(value);
+      return normalized === "newchat" || normalized === "新しいチャット" || normalized === "새채팅" || normalized === "새로운채팅" || normalized === "新聊天" || normalized === "新建聊天";
+    }
+    function rowLooksLikeNewChat(row) {
+      if (!(row instanceof HTMLElement) || isOwnedNode(row) || !isVisible(row)) return false;
+      if (quickChatPrimaryLabel && quickChatRowClassName && row.className === quickChatRowClassName && row.textContent?.trim() === quickChatPrimaryLabel) {
+        return true;
+      }
+      if (!row.classList.contains("flex") || !row.classList.contains("items-center") || !row.classList.contains("gap-1")) {
+        return false;
+      }
+      return Array.from(row.querySelectorAll("button, a")).some((candidate) => !isOwnedNode(candidate) && isNewChatLabel(candidate.textContent));
+    }
+    function chatNewChatRow(panel) {
+      const rows = Array.from(panel.querySelectorAll("div")).filter(rowLooksLikeNewChat);
+      rows.sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top);
+      return rows[0] ?? null;
+    }
+    function defaultQuickChatLabel() {
+      const language = document.documentElement.lang?.toLocaleLowerCase() ?? "";
+      if (language.startsWith("ja")) return "クイックチャット";
+      if (language.startsWith("ko")) return "빠른 채팅";
+      return "Quick chat";
+    }
+    function createQuickChatFallback() {
+      const branch = document.createElement("div");
+      branch.className = "pe-1";
+      branch.innerHTML = [
+        '<button class="codex-theme-quick-chat-button no-drag cursor-interaction items-center gap-1 border whitespace-nowrap select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0 disabled:cursor-default disabled:opacity-40 flex rounded-lg text-tertiary enabled:hover:bg-primary-ghost-hover data-[state=open]:bg-primary-ghost-hover border-transparent h-6 px-2 py-0 text-xs leading-4 aspect-square shrink-0 justify-center !px-0" type="button">',
+        '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">',
+        '<path d="M7.9834 5.3042C8.27312 5.30446 8.50879 5.5398 8.50879 5.82959V7.479H10.1582C10.4482 7.479 10.6836 7.71445 10.6836 8.00439C10.6836 8.29434 10.4482 8.52979 10.1582 8.52979H8.50879V10.1802C8.50853 10.4697 8.27296 10.7053 7.9834 10.7056C7.69361 10.7056 7.45827 10.4699 7.45801 10.1802V8.52979H5.80762C5.51767 8.52979 5.28223 8.29434 5.28223 8.00439C5.28223 7.71445 5.51767 7.479 5.80762 7.479H7.45801V5.82959C7.45801 5.53964 7.69345 5.3042 7.9834 5.3042Z" fill="currentColor"></path>',
+        '<path fill-rule="evenodd" clip-rule="evenodd" d="M8 1.80811C11.575 1.80811 14.5254 4.55306 14.5254 8.00049C14.5252 11.4478 11.5749 14.1919 8 14.1919C6.78477 14.1919 5.75932 13.8294 4.75488 13.3599L2.9873 13.8188C2.5113 13.9421 2.07317 13.5186 2.17969 13.0386L2.5498 11.3638C2.03641 10.3602 1.4747 9.38219 1.47461 8.00049C1.47461 4.55306 4.42502 1.80811 8 1.80811ZM8 2.85889C4.94756 2.85889 2.52539 5.18869 2.52539 8.00049C2.52548 9.13389 2.98018 9.88342 3.55176 11.0151C3.62017 11.1507 3.63938 11.3062 3.60645 11.4546L3.34277 12.6411L4.62598 12.3091L4.74023 12.2896C4.81669 12.2837 4.89333 12.2917 4.9668 12.312L5.0752 12.3521L5.44238 12.522C6.29248 12.8997 7.09158 13.1421 8 13.1421C11.0523 13.1421 13.4744 10.8121 13.4746 8.00049C13.4746 5.18869 11.0524 2.85889 8 2.85889Z" fill="currentColor"></path>',
+        "</svg>",
+        "</button>"
+      ].join("");
+      return sanitizeQuickChatTemplate(branch);
+    }
+    function isQuickChatStore(value) {
+      try {
+        return value != null && typeof value === "object" && typeof value.get === "function" && typeof value.set === "function" && typeof value.watch === "function" && typeof value.when === "function" && value.node != null && value.chain != null;
+      } catch {
+        return false;
+      }
+    }
+    function quickChatStoreFromFiberTree() {
+      const root = currentReactFiberRoot();
+      if (root == null) return null;
+      const stack = [root];
+      const visitedFibers = /* @__PURE__ */ new Set();
+      while (stack.length > 0 && visitedFibers.size < 1e5) {
+        const fiber = stack.pop();
+        if (fiber == null || visitedFibers.has(fiber)) continue;
+        visitedFibers.add(fiber);
+        let hook = fiber.memoizedState;
+        const visitedHooks = /* @__PURE__ */ new Set();
+        while (hook != null && typeof hook === "object" && visitedHooks.size < 1e3) {
+          if (visitedHooks.has(hook)) break;
+          visitedHooks.add(hook);
+          const state = hook.memoizedState;
+          const candidates = [state, state?.current, hook.baseState, hook.baseState?.current];
+          const store = candidates.find(isQuickChatStore);
+          if (store != null) return store;
+          hook = hook.next;
+        }
+        if (fiber.sibling != null) stack.push(fiber.sibling);
+        if (fiber.child != null) stack.push(fiber.child);
+      }
+      return null;
+    }
+    function nativeQuickChatOpen(moduleNamespace) {
+      return Object.values(moduleNamespace).find((value) => {
+        if (typeof value !== "function") return false;
+        const source = Function.prototype.toString.call(value);
+        return source.includes("chatgpt.quick-chat") && source.includes("projectId") && source.includes("projectName") && source.includes("hasConversation");
+      }) ?? null;
+    }
+    async function loadQuickChatRuntime() {
+      const testLoader = globalThis.__codexThemeQuickChatLoader;
+      if (typeof testLoader === "function") {
+        const loaded = await testLoader();
+        if (typeof loaded?.open !== "function") {
+          throw new Error("The Quick chat test loader returned an invalid runtime");
+        }
+        return loaded;
+      }
+      const appInitialPattern = /\/app-initial-[^/]+\.js(?:[?#]|$)/;
+      const appInitialUrl = resourceAssetUrl(appInitialPattern) ?? linkedAssetUrl(appInitialPattern);
+      if (appInitialUrl == null) throw new Error("The Quick chat app runtime was not found");
+      const moduleNamespace = await import(appInitialUrl);
+      const open = nativeQuickChatOpen(moduleNamespace);
+      if (open == null) throw new Error("The native Quick chat command was not found");
+      return { appInitialUrl, open };
+    }
+    async function ensureQuickChatRuntime() {
+      if (quickChatRuntime != null) return quickChatRuntime;
+      if (quickChatRuntimePromise == null) {
+        quickChatRuntimePromise = loadQuickChatRuntime().then((loaded) => {
+          quickChatRuntime = loaded;
+          quickChatLastError = null;
+          diagnostics.quickChatBridgeLoads += 1;
+          return loaded;
+        }).catch((error) => {
+          quickChatLastError = String(error?.stack || error);
+          diagnostics.quickChatBridgeLoadErrors += 1;
+          quickChatRuntimePromise = null;
+          throw error;
+        });
+      }
+      return quickChatRuntimePromise;
+    }
+    async function openQuickChatThroughApp() {
+      const runtime22 = await ensureQuickChatRuntime();
+      const store = quickChatStoreFromFiberTree();
+      if (store == null) throw new Error("The live Quick chat state store was not found");
+      return runtime22.open(store, {});
+    }
+    function openQuickChat(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        const result = typeof quickChatHandler === "function" ? quickChatHandler(event) : openQuickChatThroughApp();
+        diagnostics.quickChatOpens += 1;
+        if (result != null && typeof result.then === "function") {
+          Promise.resolve(result).catch((error) => {
+            quickChatLastError = String(error?.stack || error);
+            diagnostics.quickChatOpenErrors += 1;
+          });
+        }
+      } catch (error) {
+        quickChatLastError = String(error?.stack || error);
+        diagnostics.quickChatOpenErrors += 1;
+      }
+    }
+    function renderChatQuickChatButton() {
+      const panel = document.querySelector(".app-shell-left-panel");
+      const existing2 = document.getElementById(QUICK_CHAT_BUTTON_ID);
+      if (!(panel instanceof HTMLElement) || !usagePanelIsAllowed()) {
+        existing2?.remove();
+        return;
+      }
+      const nativeButton = captureNativeQuickChat(panel);
+      if (nativeButton instanceof HTMLButtonElement) {
+        existing2?.remove();
+        return;
+      }
+      const row = chatNewChatRow(panel);
+      if (!(row instanceof HTMLElement)) {
+        existing2?.remove();
+        return;
+      }
+      if (existing2 instanceof HTMLElement && existing2.parentElement === row) return;
+      existing2?.remove();
+      const branch = quickChatTemplate instanceof HTMLElement ? sanitizeQuickChatTemplate(quickChatTemplate.cloneNode(true)) : createQuickChatFallback();
+      if (!(branch instanceof HTMLElement)) return;
+      branch.id = QUICK_CHAT_BUTTON_ID;
+      const button = branch instanceof HTMLButtonElement ? branch : branch.querySelector("button");
+      if (!(button instanceof HTMLButtonElement)) return;
+      button.disabled = false;
+      const label = quickChatLabel || defaultQuickChatLabel();
+      button.setAttribute("aria-label", label);
+      button.setAttribute("title", label);
+      button.addEventListener("click", openQuickChat);
+      row.append(branch);
+      diagnostics.quickChatButtonsCreated += 1;
     }
     function reactFiberForElement(element) {
       if (!(element instanceof Element)) return null;
@@ -2274,6 +2703,7 @@ ${block.code}`;
       diagnostics.structureReconciles += 1;
       ensureStyle();
       renderUsagePanel();
+      renderChatQuickChatButton();
       renderServerLatencies();
       const nextComposerSurface = findComposerSurface();
       if (nextComposerSurface !== composerSurface) setComposerSurface(nextComposerSurface);
@@ -2367,7 +2797,9 @@ ${block.code}`;
         diagnostics.installs += 1;
         if (document.documentElement) installObserver();
         activityTimer = setInterval(scheduleActivity, ACTIVITY_REFRESH_MS);
-        usageTimer = setInterval(refreshUsage, USAGE_REFRESH_MS);
+        if (config.usageManagedByHost !== true) {
+          usageTimer = setInterval(refreshUsage, USAGE_REFRESH_MS);
+        }
         chatTurnDiffTimer = setInterval(
           scheduleWorkModeEnhancements,
           CHAT_TURN_DIFF_REFRESH_MS
@@ -2382,7 +2814,7 @@ ${block.code}`;
           };
           document.addEventListener("DOMContentLoaded", domReadyHandler, { once: true });
         }
-        void refreshUsage();
+        if (config.usageManagedByHost !== true) void refreshUsage();
       }
       refresh("install");
       return {
@@ -2442,6 +2874,7 @@ ${block.code}`;
         },
         nodes: {
           usagePanels: document.querySelectorAll(`#${USAGE_PANEL_ID}`).length,
+          chatQuickChatButtons: document.querySelectorAll(`#${QUICK_CHAT_BUTTON_ID}`).length,
           composerCanvases: document.querySelectorAll(".codex-theme-rainbow-canvas").length,
           fireLayers: document.querySelectorAll(".codex-theme-thumb-fire-layer").length,
           fireImages: document.querySelectorAll(".codex-theme-thumb-fire").length,
@@ -2457,6 +2890,15 @@ ${block.code}`;
           loaded: nativeTurnDiffRuntime != null,
           loading: nativeTurnDiffRuntimePromise != null && nativeTurnDiffRuntime == null,
           lastError: nativeTurnDiffLastError
+        },
+        quickChat: {
+          handlerCaptured: typeof quickChatHandler === "function",
+          bridgeLoaded: quickChatRuntime != null,
+          bridgeLoading: quickChatRuntimePromise != null && quickChatRuntime == null,
+          liveStoreFound: quickChatStoreFromFiberTree() != null,
+          lastError: quickChatLastError,
+          label: quickChatLabel || null,
+          primaryLabel: quickChatPrimaryLabel || null
         },
         usage: {
           value: uiState.usage,
@@ -2519,6 +2961,15 @@ ${block.code}`;
       nativeTurnDiffRuntimePromise = null;
       nativeTurnDiffRenderInFlight = false;
       nativeTurnDiffRenderRequested = false;
+      document.getElementById(QUICK_CHAT_BUTTON_ID)?.remove();
+      quickChatHandler = null;
+      quickChatTemplate = null;
+      quickChatLabel = "";
+      quickChatPrimaryLabel = "";
+      quickChatRowClassName = "";
+      quickChatRuntime = null;
+      quickChatRuntimePromise = null;
+      quickChatLastError = null;
       if (composerSurface instanceof HTMLElement) {
         removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-composer");
         removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-active");
@@ -2552,7 +3003,7 @@ ${block.code}`;
   }
 }
 
-// src/page/styles.mjs
+// Codex_to_Work/src/page/styles.mjs
 function createThemeCss(imageDataUrl) {
   return `
 :root {
@@ -2951,20 +3402,21 @@ function createThemeCss(imageDataUrl) {
 `;
 }
 
-// src/page/source.mjs
-var PAGE_RUNTIME_VERSION = 19;
-function createPageSource(imageDataUrl, fireDataUrl, { rainbowPreview = false } = {}) {
+// Codex_to_Work/src/page/source.mjs
+var PAGE_RUNTIME_VERSION = 24;
+function createPageSource(imageDataUrl, fireDataUrl, { rainbowPreview = false, usageManagedByHost = false } = {}) {
   const config = {
     version: PAGE_RUNTIME_VERSION,
     css: createThemeCss(imageDataUrl),
     fireDataUrl,
     rainbowPreview,
+    usageManagedByHost,
     imageBytes: Buffer.byteLength(imageDataUrl, "utf8")
   };
   return `(${installPageRuntime.toString()})(${JSON.stringify(config)})`;
 }
 
-// src/main.mjs
+// Codex_to_Work/src/main.mjs
 var scriptDirectory = path2.dirname(fileURLToPath(import.meta.url));
 var projectPath = path2.basename(scriptDirectory) === "src" ? path2.dirname(scriptDirectory) : scriptDirectory;
 async function main() {
@@ -2978,6 +3430,13 @@ async function main() {
     throw new Error("/Applications에서 ChatGPT 또는 Codex 앱을 찾지 못했습니다.");
   }
   validateAssets(options);
+  const codexExecutable = path2.resolve(
+    path2.dirname(appExecutable),
+    "..",
+    "Resources",
+    "codex"
+  );
+  const usageClient = fs2.existsSync(codexExecutable) ? new AppServerRateLimitClient(codexExecutable) : null;
   console.log(`[wallpaper] 사진: ${options.imagePath}`);
   console.log(`[wallpaper] 불꽃: ${options.firePath}`);
   console.log(`[wallpaper] 앱: ${appExecutable}`);
@@ -2990,11 +3449,12 @@ async function main() {
   const usageCachePath = path2.join(options.profilePath, "codex-theme-usage.json");
   const pinnedSshHosts = parsePinnedSshHosts(SSH_CONFIG_PATH);
   const source = createPageSource(assetDataUrl(options.imagePath), assetDataUrl(options.firePath), {
-    rainbowPreview: options.inspectUi
+    rainbowPreview: options.inspectUi,
+    usageManagedByHost: usageClient != null
   });
   const childEnvironment = { ...process.env };
   if (options.skipRemoteSshBoot) childEnvironment.CODEX_SSH_SKIP_APP_SERVER_BOOT = "true";
-  const child = spawn(
+  const child = spawn2(
     appExecutable,
     [
       "--remote-debugging-pipe",
@@ -3007,10 +3467,17 @@ async function main() {
     }
   );
   let latencyTimer = 0;
+  let usageTimer = 0;
+  let usageRefreshInFlight = null;
+  let appServerUsageAvailable = false;
+  let lastUsageError = null;
   let controller = null;
   const terminate = () => {
     if (latencyTimer) clearInterval(latencyTimer);
+    if (usageTimer) clearInterval(usageTimer);
     latencyTimer = 0;
+    usageTimer = 0;
+    usageClient?.close();
     controller?.dispose();
     if (!child.killed) child.kill("SIGTERM");
   };
@@ -3024,6 +3491,8 @@ async function main() {
   child.once("exit", (code, signal) => {
     controller?.dispose();
     if (latencyTimer) clearInterval(latencyTimer);
+    if (usageTimer) clearInterval(usageTimer);
+    usageClient?.close();
     if (signal) console.log(`[wallpaper] Codex가 ${signal} 신호로 종료되었습니다.`);
     else console.log(`[wallpaper] Codex가 종료되었습니다. 코드=${code ?? "unknown"}`);
     process.exit(code ?? 0);
@@ -3052,6 +3521,32 @@ async function main() {
   const broadcastUiState = async () => {
     if (!controller) return;
     await Promise.allSettled(controller.sessionIds().map(pushUiState));
+  };
+  const refreshAccountUsage = async () => {
+    if (usageClient == null || usageRefreshInFlight != null) return usageRefreshInFlight;
+    usageRefreshInFlight = (async () => {
+      try {
+        const usage = await usageClient.read();
+        const visibleValueChanged = latestUsage?.remainingPercent !== usage.remainingPercent || latestUsage?.resetAtMs !== usage.resetAtMs;
+        appServerUsageAvailable = true;
+        latestUsage = usage;
+        writeUsageCache(usageCachePath, usage);
+        lastUsageError = null;
+        if (visibleValueChanged) {
+          console.log(`[wallpaper] Codex 앱 서버 사용량 갱신: ${usage.remainingPercent}% 남음`);
+        }
+        await broadcastUiState();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (lastUsageError !== message) {
+          lastUsageError = message;
+          console.error(`[wallpaper] Codex 앱 서버 사용량을 읽지 못했습니다: ${message}`);
+        }
+      } finally {
+        usageRefreshInFlight = null;
+      }
+    })();
+    return usageRefreshInFlight;
   };
   const inspectUi = async (sessionId) => {
     const result = await cdp.send(
@@ -3141,6 +3636,7 @@ async function main() {
     await broadcastUiState();
   };
   const captureUsageResponse = async (sessionId, requestId) => {
+    if (appServerUsageAvailable) return;
     try {
       const responseBody = await cdp.send("Network.getResponseBody", { requestId }, sessionId);
       const body = responseBody.base64Encoded ? Buffer.from(responseBody.body, "base64").toString("utf8") : responseBody.body;
@@ -3205,6 +3701,10 @@ async function main() {
   await cdp.send("Target.setDiscoverTargets", { discover: true });
   const { targetInfos = [] } = await cdp.send("Target.getTargets");
   await Promise.all(targetInfos.map((targetInfo) => controller.handleTargetInfo(targetInfo)));
+  if (usageClient != null) {
+    void refreshAccountUsage();
+    usageTimer = setInterval(() => void refreshAccountUsage(), 60 * 1e3);
+  }
   void refreshLatencies();
   latencyTimer = setInterval(() => void refreshLatencies(), LATENCY_REFRESH_MS);
   console.log("[wallpaper] 실행기를 닫으면 이 전용 Codex 인스턴스도 함께 종료됩니다.");

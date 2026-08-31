@@ -60,7 +60,7 @@ export function parseArguments(argv, projectPath) {
     } else if (argument === "--help" || argument === "-h") {
       options.help = true;
     } else {
-      throw new Error(`알 수 없는 인자이옵니다: ${argument}`);
+      throw new Error(`알 수 없는 인자입니다: ${argument}`);
     }
   }
 
@@ -91,24 +91,24 @@ export function findAppExecutable() {
 
 export function validateAssets(options) {
   if (!fs.existsSync(options.imagePath)) {
-    throw new Error(`배경 사진이 없사옵니다: ${options.imagePath}`);
+    throw new Error(`배경 사진이 없습니다: ${options.imagePath}`);
   }
   if (!fs.statSync(options.imagePath).isFile()) {
-    throw new Error(`배경 경로가 파일이 아니옵니다: ${options.imagePath}`);
+    throw new Error(`배경 경로가 파일이 아닙니다: ${options.imagePath}`);
   }
   if (!fs.existsSync(options.firePath)) {
-    throw new Error(`불꽃 GIF가 없사옵니다: ${options.firePath}`);
+    throw new Error(`불꽃 GIF가 없습니다: ${options.firePath}`);
   }
   if (!fs.statSync(options.firePath).isFile()) {
-    throw new Error(`불꽃 경로가 파일이 아니옵니다: ${options.firePath}`);
+    throw new Error(`불꽃 경로가 파일이 아닙니다: ${options.firePath}`);
   }
 
   const imageExtension = path.extname(options.imagePath).toLowerCase();
   if (![".jpg", ".jpeg", ".png"].includes(imageExtension)) {
-    throw new Error("배경은 JPEG 또는 PNG 파일이어야 하옵니다.");
+    throw new Error("배경은 JPEG 또는 PNG 파일이어야 합니다.");
   }
   if (path.extname(options.firePath).toLowerCase() !== ".gif") {
-    throw new Error("불꽃은 GIF 파일이어야 하옵니다.");
+    throw new Error("불꽃은 GIF 파일이어야 합니다.");
   }
 }
 
@@ -121,7 +121,7 @@ export function assetDataUrl(assetPath) {
     ".png": "image/png",
   };
   const mimeType = mimeTypes[extension];
-  if (mimeType == null) throw new Error(`지원하지 않는 이미지 형식이옵니다: ${extension}`);
+  if (mimeType == null) throw new Error(`지원하지 않는 이미지 형식입니다: ${extension}`);
   return `data:${mimeType};base64,${fs.readFileSync(assetPath).toString("base64")}`;
 }
 
@@ -186,10 +186,15 @@ export async function measurePinnedSshLatencies(hosts) {
 }
 
 export function normalizeUsagePayload(payload, capturedAtMs = Date.now()) {
-  const rateLimit = payload?.rate_limit;
-  if (rateLimit == null || typeof rateLimit !== "object") return null;
+  const rateLimits = [
+    payload?.rate_limit,
+    ...(Array.isArray(payload?.additional_rate_limits)
+      ? payload.additional_rate_limits.map((limit) => limit?.rate_limit)
+      : []),
+  ].filter((rateLimit) => rateLimit != null && typeof rateLimit === "object");
 
-  const windows = [rateLimit.primary_window, rateLimit.secondary_window]
+  const windows = rateLimits
+    .flatMap((rateLimit) => [rateLimit.primary_window, rateLimit.secondary_window])
     .filter((window) => window != null && Number.isFinite(Number(window.used_percent)))
     .map((window) => ({
       usedPercent: Number(window.used_percent),
@@ -203,6 +208,41 @@ export function normalizeUsagePayload(payload, capturedAtMs = Date.now()) {
     if (
       candidate.usedPercent === current.usedPercent
       && candidate.windowSeconds > current.windowSeconds
+    ) {
+      return candidate;
+    }
+    return current;
+  });
+
+  return {
+    remainingPercent: Math.round(
+      Math.min(100, Math.max(0, 100 - limitingWindow.usedPercent)),
+    ),
+    resetAtMs: Number.isFinite(limitingWindow.resetAtSeconds)
+      ? limitingWindow.resetAtSeconds * 1_000
+      : null,
+    capturedAtMs,
+  };
+}
+
+export function normalizeAppServerRateLimits(payload, capturedAtMs = Date.now()) {
+  const snapshot = payload?.rateLimitsByLimitId?.codex ?? payload?.rateLimits;
+  if (snapshot == null || typeof snapshot !== "object") return null;
+
+  const windows = [snapshot.primary, snapshot.secondary]
+    .filter((window) => window != null && Number.isFinite(Number(window.usedPercent)))
+    .map((window) => ({
+      usedPercent: Number(window.usedPercent),
+      windowMinutes: Number(window.windowDurationMins) || 0,
+      resetAtSeconds: Number(window.resetsAt),
+    }));
+  if (windows.length === 0) return null;
+
+  const limitingWindow = windows.reduce((current, candidate) => {
+    if (candidate.usedPercent > current.usedPercent) return candidate;
+    if (
+      candidate.usedPercent === current.usedPercent
+      && candidate.windowMinutes > current.windowMinutes
     ) {
       return candidate;
     }
@@ -237,6 +277,6 @@ export function writeUsageCache(cachePath, usage) {
   try {
     fs.writeFileSync(cachePath, `${JSON.stringify(usage)}\n`, { mode: 0o600 });
   } catch (error) {
-    console.error(`[wallpaper] 사용량 캐시를 저장하지 못했사옵니다: ${error.message}`);
+    console.error(`[wallpaper] 사용량 캐시를 저장하지 못했습니다: ${error.message}`);
   }
 }

@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CdpPipe } from "./host/cdp-pipe.mjs";
+import { AppServerRateLimitClient } from "./host/rate-limit-client.mjs";
 import {
   LATENCY_REFRESH_MS,
   SSH_CONFIG_PATH,
@@ -37,9 +38,18 @@ async function main() {
 
   const appExecutable = findAppExecutable();
   if (!appExecutable) {
-    throw new Error("/Applications에서 ChatGPT 또는 Codex 앱을 찾지 못했사옵니다.");
+    throw new Error("/Applications에서 ChatGPT 또는 Codex 앱을 찾지 못했습니다.");
   }
   validateAssets(options);
+  const codexExecutable = path.resolve(
+    path.dirname(appExecutable),
+    "..",
+    "Resources",
+    "codex",
+  );
+  const usageClient = fs.existsSync(codexExecutable)
+    ? new AppServerRateLimitClient(codexExecutable)
+    : null;
 
   console.log(`[wallpaper] 사진: ${options.imagePath}`);
   console.log(`[wallpaper] 불꽃: ${options.firePath}`);
@@ -47,7 +57,7 @@ async function main() {
   console.log(`[wallpaper] 전용 프로필: ${options.profilePath}`);
 
   if (options.dryRun) {
-    console.log("[wallpaper] 검사 완료. 앱은 실행하지 않았사옵니다.");
+    console.log("[wallpaper] 검사 완료. 앱은 실행하지 않았습니다.");
     return;
   }
 
@@ -56,6 +66,7 @@ async function main() {
   const pinnedSshHosts = parsePinnedSshHosts(SSH_CONFIG_PATH);
   const source = createPageSource(assetDataUrl(options.imagePath), assetDataUrl(options.firePath), {
     rainbowPreview: options.inspectUi,
+    usageManagedByHost: usageClient != null,
   });
   const childEnvironment = { ...process.env };
   if (options.skipRemoteSshBoot) childEnvironment.CODEX_SSH_SKIP_APP_SERVER_BOOT = "true";
@@ -74,10 +85,17 @@ async function main() {
   );
 
   let latencyTimer = 0;
+  let usageTimer = 0;
+  let usageRefreshInFlight = null;
+  let appServerUsageAvailable = false;
+  let lastUsageError = null;
   let controller = null;
   const terminate = () => {
     if (latencyTimer) clearInterval(latencyTimer);
+    if (usageTimer) clearInterval(usageTimer);
     latencyTimer = 0;
+    usageTimer = 0;
+    usageClient?.close();
     controller?.dispose();
     if (!child.killed) child.kill("SIGTERM");
   };
@@ -86,14 +104,16 @@ async function main() {
   process.once("exit", terminate);
 
   child.once("error", (error) => {
-    console.error("[wallpaper] 앱을 실행하지 못했사옵니다:", error.message);
+    console.error("[wallpaper] 앱을 실행하지 못했습니다:", error.message);
     process.exitCode = 1;
   });
   child.once("exit", (code, signal) => {
     controller?.dispose();
     if (latencyTimer) clearInterval(latencyTimer);
-    if (signal) console.log(`[wallpaper] Codex가 ${signal} 신호로 종료되었사옵니다.`);
-    else console.log(`[wallpaper] Codex가 종료되었사옵니다. 코드=${code ?? "unknown"}`);
+    if (usageTimer) clearInterval(usageTimer);
+    usageClient?.close();
+    if (signal) console.log(`[wallpaper] Codex가 ${signal} 신호로 종료되었습니다.`);
+    else console.log(`[wallpaper] Codex가 종료되었습니다. 코드=${code ?? "unknown"}`);
     process.exit(code ?? 0);
   });
 
@@ -116,13 +136,41 @@ async function main() {
       sessionId,
     );
     if (result.exceptionDetails) {
-      throw new Error(result.exceptionDetails.text ?? "화면 상태 갱신에 실패했사옵니다.");
+      throw new Error(result.exceptionDetails.text ?? "화면 상태 갱신에 실패했습니다.");
     }
   };
 
   const broadcastUiState = async () => {
     if (!controller) return;
     await Promise.allSettled(controller.sessionIds().map(pushUiState));
+  };
+
+  const refreshAccountUsage = async () => {
+    if (usageClient == null || usageRefreshInFlight != null) return usageRefreshInFlight;
+    usageRefreshInFlight = (async () => {
+      try {
+        const usage = await usageClient.read();
+        const visibleValueChanged = latestUsage?.remainingPercent !== usage.remainingPercent
+          || latestUsage?.resetAtMs !== usage.resetAtMs;
+        appServerUsageAvailable = true;
+        latestUsage = usage;
+        writeUsageCache(usageCachePath, usage);
+        lastUsageError = null;
+        if (visibleValueChanged) {
+          console.log(`[wallpaper] Codex 앱 서버 사용량 갱신: ${usage.remainingPercent}% 남음`);
+        }
+        await broadcastUiState();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (lastUsageError !== message) {
+          lastUsageError = message;
+          console.error(`[wallpaper] Codex 앱 서버 사용량을 읽지 못했습니다: ${message}`);
+        }
+      } finally {
+        usageRefreshInFlight = null;
+      }
+    })();
+    return usageRefreshInFlight;
   };
 
   const inspectUi = async (sessionId) => {
@@ -178,7 +226,7 @@ async function main() {
       sessionId,
     );
     if (result.exceptionDetails) {
-      throw new Error(result.exceptionDetails.text ?? "UI 진단에 실패했사옵니다.");
+      throw new Error(result.exceptionDetails.text ?? "UI 진단에 실패했습니다.");
     }
     console.log(`[wallpaper] UI 진단: ${JSON.stringify(result.result?.value ?? null)}`);
   };
@@ -218,6 +266,7 @@ async function main() {
   };
 
   const captureUsageResponse = async (sessionId, requestId) => {
+    if (appServerUsageAvailable) return;
     try {
       const responseBody = await cdp.send("Network.getResponseBody", { requestId }, sessionId);
       const body = responseBody.base64Encoded
@@ -230,7 +279,7 @@ async function main() {
       console.log(`[wallpaper] 사용량 갱신: ${usage.remainingPercent}% 남음`);
       await broadcastUiState();
     } catch (error) {
-      console.error(`[wallpaper] 사용량 응답을 읽지 못했사옵니다: ${error.message}`);
+      console.error(`[wallpaper] 사용량 응답을 읽지 못했습니다: ${error.message}`);
     }
   };
 
@@ -259,7 +308,7 @@ async function main() {
       try {
         await pushUiState(message.sessionId);
       } catch (error) {
-        console.error(`[wallpaper] 새 문서 상태 갱신을 건너뛰었사옵니다: ${error.message}`);
+        console.error(`[wallpaper] 새 문서 상태 갱신을 건너뛰었습니다: ${error.message}`);
       }
       return;
     }
@@ -290,9 +339,13 @@ async function main() {
   await cdp.send("Target.setDiscoverTargets", { discover: true });
   const { targetInfos = [] } = await cdp.send("Target.getTargets");
   await Promise.all(targetInfos.map((targetInfo) => controller.handleTargetInfo(targetInfo)));
+  if (usageClient != null) {
+    void refreshAccountUsage();
+    usageTimer = setInterval(() => void refreshAccountUsage(), 60 * 1_000);
+  }
   void refreshLatencies();
   latencyTimer = setInterval(() => void refreshLatencies(), LATENCY_REFRESH_MS);
-  console.log("[wallpaper] 실행기를 닫으면 이 전용 Codex 인스턴스도 함께 종료되옵니다.");
+  console.log("[wallpaper] 실행기를 닫으면 이 전용 Codex 인스턴스도 함께 종료됩니다.");
 }
 
 main().catch((error) => {

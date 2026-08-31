@@ -92,7 +92,7 @@ function createDom() {
 
 function runtimeConfig(overrides = {}) {
   return {
-    version: 14,
+    version: 22,
     css: createThemeCss("data:image/jpeg;base64,aW1hZ2U="),
     fireDataUrl: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
     rainbowPreview: true,
@@ -100,6 +100,29 @@ function runtimeConfig(overrides = {}) {
     timings: { rainbowGraceMs: 10, usageGraceMs: 10 },
     ...overrides,
   };
+}
+
+function appendNativeQuickChatRow(window) {
+  const panel = window.document.querySelector(".app-shell-left-panel");
+  const row = window.document.createElement("div");
+  row.className = "flex items-center gap-1";
+  const primary = window.document.createElement("button");
+  primary.type = "button";
+  primary.textContent = "新しいチャット";
+  const quickChatHost = window.document.createElement("div");
+  quickChatHost.className = "pe-1";
+  const quickChatButton = window.document.createElement("button");
+  quickChatButton.type = "button";
+  quickChatButton.setAttribute("aria-label", "クイックチャット");
+  quickChatButton.innerHTML = [
+    '<svg viewBox="0 0 16 16" aria-hidden="true">',
+    '<path d="M7.9834 5.3042C8.27312 5.30446 8.50879 5.5398 8.50879 5.82959Z"></path>',
+    "</svg>",
+  ].join("");
+  quickChatHost.append(quickChatButton);
+  row.append(primary, quickChatHost);
+  panel.prepend(row);
+  return { primary, quickChatButton, quickChatHost, row };
 }
 
 function evaluateRuntime(window, config) {
@@ -110,13 +133,93 @@ function settle(milliseconds = 40) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function attachFakeChatTurnDiffFiber(window, { chatGptTranscript = false } = {}) {
+function appendFakeAssistantActionRow(window, response) {
+  const actionRow = window.document.createElement("div");
+  actionRow.className = "mt-1.5 flex h-5 items-center justify-start gap-0.5";
+  actionRow.innerHTML = [
+    '<button type="button" aria-label="Copy response">Copy</button>',
+    '<button type="button" aria-label="Good response">Good</button>',
+    '<button type="button" aria-label="Bad response">Bad</button>',
+    '<button type="button" aria-label="Fork chat from here">Fork</button>',
+    '<span data-assistant-message-sent-time>15:00</span>',
+  ].join("");
+  response.append(actionRow);
+  return actionRow;
+}
+
+function appendFakeExecRow(window, response, item, parentFiber) {
+  const row = window.document.createElement("div");
+  row.className = "exec-row";
+  const header = window.document.createElement("div");
+  header.className = "group/activity-header flex items-center";
+  const summary = window.document.createElement("span");
+  summary.className = "min-w-0 truncate";
+  const icon = window.document.createElement("span");
+  icon.className = "exec-icon";
+  icon.setAttribute("aria-hidden", "true");
+  const label = window.document.createElement("span");
+  label.className = "exec-label text-secondary";
+  label.textContent = item.status === "running" ? "Running command" : "Ran command";
+  summary.append(icon, label);
+  header.append(summary);
+  const body = item.status === "running"
+    ? null
+    : window.document.createElement("div");
+  if (body != null) body.dataset.testid = "exec-shell-body";
+  row.append(header);
+  if (body != null) row.append(body);
+  response.insertBefore(row, response.lastElementChild);
+
+  const itemFiber = {
+    memoizedProps: { item },
+    return: parentFiber,
+    stateNode: null,
+  };
+  const headerFiber = {
+    memoizedProps: {},
+    return: itemFiber,
+    stateNode: header,
+  };
+  Object.defineProperty(header, `__reactFiber$codexThemeExecHeader${response.children.length}`, {
+    configurable: true,
+    value: headerFiber,
+  });
+  if (body != null) {
+    const bodyFiber = {
+      memoizedProps: {},
+      return: itemFiber,
+      stateNode: body,
+    };
+    Object.defineProperty(body, `__reactFiber$codexThemeExecBody${response.children.length}`, {
+      configurable: true,
+      value: bodyFiber,
+    });
+  }
+  return { body, icon, label, row, summary };
+}
+
+function attachFakeChatTurnDiffFiber(
+  window,
+  {
+    actionRow = true,
+    chatGptTranscript = false,
+    extraItems = [],
+    isTurnInProgress = false,
+  } = {},
+) {
   const main = window.document.querySelector("[data-app-shell-main-surface]");
   const host = window.document.createElement("div");
   host.className = "chat-turn-item-host";
   if (chatGptTranscript) {
     host.setAttribute("data-content-search-turn-key", "turn-1");
   }
+  const response = window.document.createElement("div");
+  response.className = "assistant-response";
+  response.innerHTML = "<p>Response</p>";
+  const assistantActionRow = actionRow
+    ? appendFakeAssistantActionRow(window, response)
+    : null;
+  host.append(response);
   main.appendChild(host);
   const unifiedDiff = [
     "diff --git a/src/page/runtime.mjs b/src/page/runtime.mjs",
@@ -170,10 +273,12 @@ function attachFakeChatTurnDiffFiber(window, { chatGptTranscript = false } = {})
   const itemFiberProps = {
     conversationId: "chat-thread-1",
     cwd: "/Users/dawn/Code.noindex/codex-theme",
+    isTurnInProgress,
     turn: {
       id: "turn-1",
       items: [
         { id: "user-message-1", type: "user-message", content: "Update the theme" },
+        ...extraItems,
         turnDiffItem,
       ],
     },
@@ -199,6 +304,9 @@ function attachFakeChatTurnDiffFiber(window, { chatGptTranscript = false } = {})
     tag: 10,
     type: providerType,
   };
+  const execRows = extraItems
+    .filter((item) => ["command-execution", "exec"].includes(item?.type))
+    .map((item) => appendFakeExecRow(window, response, item, itemFiber));
   itemFiber.return = providerFiber;
   rootFiber.child = mainFiber;
   mainFiber.child = hostFiber;
@@ -207,7 +315,16 @@ function attachFakeChatTurnDiffFiber(window, { chatGptTranscript = false } = {})
     configurable: true,
     value: mainFiber,
   });
-  return { host, itemFiber, providerType, providerValue, unifiedDiff };
+  return {
+    assistantActionRow,
+    host,
+    itemFiber,
+    providerType,
+    providerValue,
+    response,
+    execRows,
+    unifiedDiff,
+  };
 }
 
 function attachFakeTranscriptTurnDiffFibers(window, turnIds) {
@@ -226,8 +343,10 @@ function attachFakeTranscriptTurnDiffFibers(window, turnIds) {
     const host = window.document.createElement("div");
     host.className = "chat-transcript-turn-host";
     host.setAttribute("data-content-search-turn-key", turnId);
-    const response = window.document.createElement("p");
-    response.textContent = `Response ${index + 1}`;
+    const response = window.document.createElement("div");
+    response.className = "assistant-response";
+    response.innerHTML = `<p>Response ${index + 1}</p>`;
+    const actionRow = appendFakeAssistantActionRow(window, response);
     host.append(response);
     main.append(host);
     const item = {
@@ -279,7 +398,7 @@ function attachFakeTranscriptTurnDiffFibers(window, turnIds) {
     if (previousHostFiber == null) mainFiber.child = hostFiber;
     else previousHostFiber.sibling = hostFiber;
     previousHostFiber = hostFiber;
-    return { host, item, itemFiber, turnId };
+    return { actionRow, host, item, itemFiber, response, turnId };
   });
   Object.defineProperty(main, "__reactFiber$codexThemeTranscriptTest", {
     configurable: true,
@@ -335,10 +454,7 @@ test("same-version evaluation is idempotent and keeps animation nodes", async ()
     const firstFireLayer = window.document.querySelector(".codex-theme-thumb-fire-layer");
     assert.equal(firstCanvas?.parentElement?.classList.contains("composer-body"), true);
     assert.equal(firstCanvas?.dataset.effect, "surface-fill");
-    assert.equal(
-      firstCanvas?.style.getPropertyValue("--codex-theme-composer-radius"),
-      "25px",
-    );
+    assert.equal(firstCanvas?.style.getPropertyValue("--codex-theme-composer-radius"), "");
 
     evaluateRuntime(window, runtimeConfig());
     await settle();
@@ -412,6 +528,102 @@ test("usage percentage clips a full-width rainbow instead of resizing it", async
   }
 });
 
+test("usage fetch reflects the limiting additional model window", async () => {
+  const dom = createDom();
+  const { window } = dom;
+  try {
+    window.electronBridge = {
+      sendMessageFromView(message) {
+        window.setTimeout(() => {
+          window.postMessage({
+            type: "fetch-response",
+            requestId: message.requestId,
+            responseType: "success",
+            bodyJsonString: JSON.stringify({
+              rate_limit: {
+                primary_window: {
+                  used_percent: 0,
+                  limit_window_seconds: 18_000,
+                  reset_at: 2_000_000_000,
+                },
+                secondary_window: {
+                  used_percent: 0,
+                  limit_window_seconds: 604_800,
+                  reset_at: 2_000_100_000,
+                },
+              },
+              additional_rate_limits: [{
+                limit_name: "gpt-5.6-sol",
+                rate_limit: {
+                  primary_window: {
+                    used_percent: 37,
+                    limit_window_seconds: 18_000,
+                    reset_at: 2_000_200_000,
+                  },
+                  secondary_window: {
+                    used_percent: 61,
+                    limit_window_seconds: 604_800,
+                    reset_at: 2_000_300_000,
+                  },
+                },
+              }],
+            }),
+          }, "*");
+        }, 0);
+      },
+    };
+
+    evaluateRuntime(window, runtimeConfig({ version: 23 }));
+    await settle(80);
+
+    const usage = window.__codexThemeRuntime.inspect().usage.value;
+    assert.equal(usage.remainingPercent, 39);
+    assert.equal(usage.resetAtMs, 2_000_300_000_000);
+    assert.equal(Number.isFinite(usage.capturedAtMs), true);
+    assert.equal(
+      window.__codexThemeRuntime.inspect().usage.clipRight,
+      "61%",
+    );
+  } finally {
+    window.__codexThemeRuntime?.dispose();
+    dom.window.close();
+  }
+});
+
+test("host-managed usage does not overwrite canonical state through the legacy fetch bridge", async () => {
+  const dom = createDom();
+  const { window } = dom;
+  let legacyFetches = 0;
+  try {
+    window.electronBridge = {
+      sendMessageFromView() {
+        legacyFetches += 1;
+      },
+    };
+
+    evaluateRuntime(window, runtimeConfig({
+      version: 24,
+      usageManagedByHost: true,
+    }));
+    window.__codexThemeRuntime.updateState({
+      usage: {
+        remainingPercent: 96,
+        resetAtMs: 2_000_200_000_000,
+        capturedAtMs: Date.now(),
+      },
+    });
+    await settle(80);
+
+    assert.equal(legacyFetches, 0);
+    assert.equal(window.__codexThemeRuntime.inspect().usage.value.remainingPercent, 96);
+    assert.equal(window.__codexThemeRuntime.inspect().usage.clipRight, "4%");
+    assert.equal(window.__codexThemeRuntime.inspect().resources.usageTimer, false);
+  } finally {
+    window.__codexThemeRuntime?.dispose();
+    dom.window.close();
+  }
+});
+
 test("usage panel is absent on settings routes and returns to chat routes", async () => {
   const dom = createDom();
   const { window } = dom;
@@ -472,12 +684,142 @@ test("usage panel is absent in a separate settings window without a chat profile
   }
 });
 
+test("Chat mode reuses Codex's native Quick chat button and popover handler", async () => {
+  const dom = createDom();
+  const { window } = dom;
+  try {
+    const { quickChatButton, quickChatHost, row } = appendNativeQuickChatRow(window);
+    let opens = 0;
+    quickChatButton.__reactProps$test = {
+      onClick() {
+        opens += 1;
+      },
+    };
+
+    evaluateRuntime(window, runtimeConfig());
+    await settle();
+    const runtime = window.__codexThemeRuntime;
+    assert.equal(runtime.inspect().quickChat.handlerCaptured, true);
+    assert.equal(runtime.inspect().diagnostics.quickChatHandlerCaptures, 1);
+    assert.equal(
+      window.document.getElementById("codex-theme-chat-quick-chat"),
+      null,
+      "Codex mode must keep the app's own button",
+    );
+
+    quickChatHost.remove();
+    runtime.refresh();
+    await settle();
+    const restored = window.document.getElementById("codex-theme-chat-quick-chat");
+    const restoredButton = restored?.querySelector("button");
+    assert.equal(restored?.parentElement, row);
+    assert.equal(restoredButton?.getAttribute("aria-label"), "クイックチャット");
+    assert.ok(restoredButton?.querySelector('path[d^="M7.9834 5.3042"]'));
+
+    restoredButton.click();
+    assert.equal(opens, 1);
+    assert.equal(runtime.inspect().diagnostics.quickChatOpens, 1);
+
+    runtime.refresh();
+    await settle();
+    assert.equal(
+      window.document.getElementById("codex-theme-chat-quick-chat"),
+      restored,
+      "Chat mode reconciliation must not duplicate or replace the restored button",
+    );
+
+    row.append(quickChatHost);
+    runtime.refresh();
+    await settle();
+    assert.equal(
+      window.document.getElementById("codex-theme-chat-quick-chat"),
+      null,
+      "returning to Codex mode must remove the themed copy",
+    );
+  } finally {
+    window.__codexThemeRuntime?.dispose();
+    dom.window.close();
+  }
+});
+
+test("initial Chat mode opens Quick chat without visiting Codex mode first", async () => {
+  const dom = createDom();
+  const { window } = dom;
+  try {
+    const { quickChatHost, row } = appendNativeQuickChatRow(window);
+    quickChatHost.remove();
+
+    const store = {
+      chain: {},
+      node: {},
+      get() {},
+      set() {},
+      watch() {},
+      when() {},
+    };
+    const storeFiber = {
+      child: null,
+      memoizedState: {
+        baseState: null,
+        memoizedState: { current: store },
+        next: null,
+      },
+      return: null,
+      sibling: null,
+    };
+    const rootFiber = {
+      child: storeFiber,
+      memoizedState: null,
+      return: null,
+      sibling: null,
+    };
+    storeFiber.return = rootFiber;
+    window.document.body.__reactContainer$quickChatTest = { current: rootFiber };
+
+    let opens = 0;
+    window.__codexThemeQuickChatLoader = async () => ({
+      open(actualStore, options) {
+        assert.equal(actualStore, store);
+        assert.equal(Object.keys(options).length, 0);
+        opens += 1;
+      },
+    });
+
+    evaluateRuntime(window, runtimeConfig());
+    await settle();
+    const runtime = window.__codexThemeRuntime;
+    const restored = window.document.getElementById("codex-theme-chat-quick-chat");
+    const restoredButton = restored?.querySelector("button");
+    assert.equal(restored?.parentElement, row);
+    assert.ok(restoredButton?.classList.contains("codex-theme-quick-chat-button"));
+    assert.ok(restoredButton?.classList.contains("h-6"));
+    assert.ok(restoredButton?.classList.contains("text-tertiary"));
+    assert.equal(restoredButton?.querySelector("svg")?.getAttribute("width"), "16");
+    assert.equal(restoredButton?.querySelector("svg")?.getAttribute("height"), "16");
+    assert.ok(restoredButton?.querySelector('path[d^="M7.9834 5.3042"]'));
+    assert.equal(runtime.inspect().quickChat.handlerCaptured, false);
+    assert.equal(runtime.inspect().quickChat.liveStoreFound, true);
+
+    restoredButton.click();
+    await settle();
+    assert.equal(opens, 1);
+    assert.equal(runtime.inspect().quickChat.bridgeLoaded, true);
+    assert.equal(runtime.inspect().diagnostics.quickChatBridgeLoads, 1);
+    assert.equal(runtime.inspect().diagnostics.quickChatOpenErrors, 0);
+  } finally {
+    delete window.__codexThemeQuickChatLoader;
+    window.__codexThemeRuntime?.dispose();
+    dom.window.close();
+  }
+});
+
 test("ChatGPT prose mode mounts the app's native turn-diff component with live providers", async () => {
   const dom = createDom();
   const { window } = dom;
   try {
     const {
       host,
+      assistantActionRow,
       itemFiber,
       providerType,
       providerValue,
@@ -491,6 +833,7 @@ test("ChatGPT prose mode mounts the app's native turn-diff component with live p
     const card = container?.querySelector(".native-turn-diff-test");
     assert.ok(card);
     assert.equal(container.getAttribute("data-codex-theme-owned"), "true");
+    assert.equal(container.nextElementSibling, assistantActionRow);
     assert.equal(host.querySelector(".codex-theme-chat-turn-diff"), null);
     assert.equal(card.textContent, "Edited filesUndoReview changes");
     assert.equal(nativeRuntime.calls.createRoot, 1);
@@ -514,6 +857,132 @@ test("ChatGPT prose mode mounts the app's native turn-diff component with live p
   }
 });
 
+test("ChatGPT prose mode waits for turn completion before mounting the full native diff card", async () => {
+  const dom = createDom();
+  const { window } = dom;
+  try {
+    const { host, itemFiber } = attachFakeChatTurnDiffFiber(window, {
+      isTurnInProgress: true,
+    });
+    const nativeRuntime = installFakeNativeTurnDiffRuntime(window);
+    evaluateRuntime(window, runtimeConfig());
+    await settle(80);
+
+    assert.equal(host.querySelector('[data-codex-theme-native-turn-diff="true"]'), null);
+    assert.equal(nativeRuntime.calls.createRoot, 0);
+
+    itemFiber.memoizedProps.isTurnInProgress = false;
+    window.__codexThemeRuntime.refresh();
+    await settle(80);
+
+    assert.ok(host.querySelector('[data-codex-theme-native-turn-diff="true"]'));
+    assert.equal(nativeRuntime.calls.createRoot, 1);
+    assert.equal(nativeRuntime.calls.renders.at(-1).componentProps.isInProgress, false);
+  } finally {
+    window.__codexThemeRuntime?.dispose();
+    dom.window.close();
+  }
+});
+
+test("ChatGPT prose mode exposes completed and running commands inline and in redacted Codex details", async () => {
+  const dom = createDom();
+  const { window } = dom;
+  try {
+    const { execRows, host, itemFiber } = attachFakeChatTurnDiffFiber(window, {
+      extraItems: [
+        {
+          type: "command-execution",
+          parsedCmd: {
+            cmd: 'OPENAI_API_KEY=top-secret npm test --token "private token"',
+          },
+          status: "completed",
+        },
+        {
+          type: "command-execution",
+          parsedCmd: { cmd: "sleep 30" },
+          status: "running",
+        },
+        { type: "patch-apply", path: "src/page/runtime.mjs" },
+        {
+          type: "proposed-plan",
+          content: "Implement the panel\n```js\nconst ready = true;\n```",
+        },
+        {
+          type: "todo-list",
+          items: [{ status: "in_progress", text: "Add details panel" }],
+        },
+        { type: "mcp-tool-call", server: "github", tool: "get_pull_request" },
+        { type: "web-search", query: "Codex code review" },
+      ],
+      isTurnInProgress: true,
+    });
+    installFakeNativeTurnDiffRuntime(window);
+    evaluateRuntime(window, runtimeConfig());
+    await settle(80);
+
+    let panel = host.querySelector('[data-codex-theme-work-details="true"]');
+    assert.ok(panel);
+    assert.equal(panel.open, false);
+    assert.match(panel.querySelector("summary").textContent, /Working/);
+    assert.match(panel.textContent, /OPENAI_API_KEY=<redacted>/);
+    assert.match(panel.textContent, /--token <redacted>/);
+    assert.doesNotMatch(panel.textContent, /top-secret|private token/);
+    assert.match(panel.textContent, /src\/page\/runtime\.mjs/);
+    assert.match(panel.textContent, /const ready = true;/);
+    assert.match(panel.textContent, /Add details panel/);
+    assert.match(panel.textContent, /github · get_pull_request/);
+    assert.match(panel.textContent, /Codex code review/);
+    assert.equal(
+      execRows[0].summary.textContent,
+      "OPENAI_API_KEY=<redacted> npm test --token <redacted>",
+    );
+    assert.equal(execRows[0].icon.isConnected, true);
+    assert.equal(execRows[0].label.className, "exec-label text-secondary");
+    assert.equal(execRows[1].body, null);
+    assert.equal(execRows[1].summary.textContent, "sleep 30");
+    assert.equal(execRows[1].icon.isConnected, true);
+    assert.equal(execRows[1].label.className, "exec-label text-secondary");
+    assert.equal(
+      execRows[0].summary.getAttribute("data-codex-theme-work-command-summary"),
+      "true",
+    );
+    assert.equal(
+      execRows[0].summary.getAttribute("data-codex-theme-work-command"),
+      "OPENAI_API_KEY=<redacted> npm test --token <redacted>",
+    );
+
+    panel.open = true;
+    window.__codexThemeRuntime.refresh();
+    await settle();
+    panel = host.querySelector('[data-codex-theme-work-details="true"]');
+    assert.equal(panel.open, true);
+
+    itemFiber.memoizedProps.conversationDetailLevel = "STEPS_CODE";
+    window.__codexThemeRuntime.refresh();
+    await settle();
+    assert.equal(host.querySelector('[data-codex-theme-work-details="true"]'), null);
+    assert.equal(execRows[0].summary.textContent, "Ran command");
+    assert.equal(execRows[0].icon.isConnected, true);
+    assert.equal(execRows[0].label.className, "exec-label text-secondary");
+    assert.equal(
+      execRows[0].summary.hasAttribute("data-codex-theme-work-command-summary"),
+      false,
+    );
+    assert.equal(execRows[0].summary.hasAttribute("data-codex-theme-work-command"), false);
+    assert.equal(execRows[1].summary.textContent, "Running command");
+    assert.equal(execRows[1].icon.isConnected, true);
+    assert.equal(execRows[1].label.className, "exec-label text-secondary");
+    assert.equal(
+      execRows[1].summary.hasAttribute("data-codex-theme-work-command-summary"),
+      false,
+    );
+    assert.equal(execRows[1].summary.hasAttribute("data-codex-theme-work-command"), false);
+  } finally {
+    window.__codexThemeRuntime?.dispose();
+    dom.window.close();
+  }
+});
+
 test("ChatGPT transcript turns reuse the native card at their real turn-key host", async () => {
   const dom = createDom();
   const { window } = dom;
@@ -528,7 +997,7 @@ test("ChatGPT transcript turns reuse the native card at their real turn-key host
     await settle(80);
 
     const container = host.querySelector(
-      ':scope > [data-codex-theme-native-turn-diff="true"]',
+      '[data-codex-theme-native-turn-diff="true"]',
     );
     assert.ok(container);
     assert.equal(container.dataset.diffKey, "chat-thread-1:turn-diff-1");
@@ -544,7 +1013,7 @@ test("ChatGPT transcript turns reuse the native card at their real turn-key host
   }
 });
 
-test("each transcript turn with file changes ends with its own native card", async () => {
+test("each transcript turn places its native card before the assistant action row", async () => {
   const dom = createDom();
   const { window } = dom;
   try {
@@ -555,15 +1024,41 @@ test("each transcript turn with file changes ends with its own native card", asy
 
     assert.equal(nativeRuntime.calls.createRoot, 3);
     assert.equal(nativeRuntime.calls.renders.length >= 3, true);
-    for (const { host, turnId } of turns) {
+    for (const { actionRow, host, response, turnId } of turns) {
       const container = host.querySelector(
-        ':scope > [data-codex-theme-native-turn-diff="true"]',
+        '[data-codex-theme-native-turn-diff="true"]',
       );
       assert.ok(container);
       assert.equal(container.dataset.diffKey, `chat-thread-1:${turnId}`);
-      assert.equal(host.lastElementChild, container);
+      assert.equal(container.parentElement, response);
+      assert.equal(container.nextElementSibling, actionRow);
       assert.equal(container.querySelector(".native-turn-diff-test") != null, true);
     }
+  } finally {
+    window.__codexThemeRuntime?.dispose();
+    dom.window.close();
+  }
+});
+
+test("a late assistant action row moves an existing native card into Codex order", async () => {
+  const dom = createDom();
+  const { window } = dom;
+  try {
+    const { host, response } = attachFakeChatTurnDiffFiber(window, { actionRow: false });
+    installFakeNativeTurnDiffRuntime(window);
+    evaluateRuntime(window, runtimeConfig());
+    await settle(80);
+
+    const container = host.querySelector('[data-codex-theme-native-turn-diff="true"]');
+    assert.ok(container);
+    assert.equal(host.lastElementChild, container);
+
+    const actionRow = appendFakeAssistantActionRow(window, response);
+    window.__codexThemeRuntime.refresh();
+    await settle(80);
+
+    assert.equal(container.parentElement, response);
+    assert.equal(container.nextElementSibling, actionRow);
   } finally {
     window.__codexThemeRuntime?.dispose();
     dom.window.close();
@@ -578,6 +1073,12 @@ test("current app surface tokens are themed without hiding pricing or upgrade UI
   assert.match(css, /--color-codex-editor-inline-code-background: var\(--codex-chat-code\)/);
   assert.match(css, /\[data-codex-theme-wallpaper-root="true"\] \{/);
   assert.match(css, /\.app-shell-left-panel \{[\s\S]*border-inline-end-color: transparent/);
+  assert.match(css, /\.codex-theme-work-details \{/);
+  assert.match(
+    css,
+    /\[data-codex-theme-native-turn-diff="true"\] \{[\s\S]*?margin-block-start: 20px;[\s\S]*?margin-inline: 0;/,
+  );
+  assert.doesNotMatch(css, /data-codex-theme-work-command-summary/);
   assert.doesNotMatch(css, /\.codex-theme-chat-turn-diff/);
   assert.doesNotMatch(css, /pro_variant/);
   assert.doesNotMatch(css, /#pricing/);
@@ -599,7 +1100,7 @@ test("the native top and bottom fades are removed without changing their layout"
   );
 });
 
-test("active composer rainbow fills the surface without creating overflow", () => {
+test("active composer rainbow is the native surface background without corner gaps", () => {
   const css = createThemeCss("data:image/jpeg;base64,aW1hZ2U=");
 
   assert.match(
@@ -608,11 +1109,11 @@ test("active composer rainbow fills the surface without creating overflow", () =
   );
   assert.match(
     css,
-    /\.codex-theme-rainbow-canvas \{[\s\S]*?border-radius: var\(--codex-theme-composer-radius, inherit\);/,
+    /\.codex-theme-rainbow-canvas \{[\s\S]*?z-index: -1;[\s\S]*?border-radius: inherit;/,
   );
   assert.match(
     css,
-    /clip-path: inset\(0 round var\(--codex-theme-composer-radius, 25px\)\);/,
+    /\.codex-theme-rainbow-canvas \{[\s\S]*?overflow: hidden;[\s\S]*?corner-shape: inherit;/,
   );
   assert.match(css, /\.codex-theme-rainbow-canvas \{[\s\S]*?mix-blend-mode: screen;/);
   assert.match(
@@ -621,6 +1122,10 @@ test("active composer rainbow fills the surface without creating overflow", () =
   );
   assert.doesNotMatch(css, /\.codex-theme-rainbow-canvas \{[\s\S]*?inset: -3px;/);
   assert.doesNotMatch(css, /\.codex-theme-rainbow-canvas \{[\s\S]*?calc\(100% \+ 6px\)/);
+  assert.doesNotMatch(
+    css,
+    /\.codex-theme-rainbow-canvas \{[\s\S]*?clip-path: inset\(0 round/,
+  );
 });
 
 test("one current main surface owns the wallpaper across nested layout surfaces", async () => {
@@ -719,7 +1224,7 @@ test("a version replacement disposes the old runtime once and preserves one UI s
     await settle();
     const oldRuntime = window.__codexThemeRuntime;
 
-    evaluateRuntime(window, runtimeConfig({ version: 15 }));
+    evaluateRuntime(window, runtimeConfig({ version: 23 }));
     await settle();
     const newRuntime = window.__codexThemeRuntime;
 

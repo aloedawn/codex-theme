@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   PINNED_SSH_ALIASES,
+  normalizeAppServerRateLimits,
   normalizeUsagePayload,
   parsePinnedSshHosts,
 } from "../src/host/support.mjs";
@@ -29,6 +30,80 @@ test("usage normalization selects the limiting window", () => {
   assert.deepEqual(usage, {
     remainingPercent: 25,
     resetAtMs: 2_000_100_000_000,
+    capturedAtMs: 1234,
+  });
+});
+
+test("usage normalization includes additional model limits", () => {
+  const usage = normalizeUsagePayload({
+    rate_limit: {
+      primary_window: {
+        used_percent: 0,
+        limit_window_seconds: 18_000,
+        reset_at: 2_000_000_000,
+      },
+      secondary_window: {
+        used_percent: 0,
+        limit_window_seconds: 604_800,
+        reset_at: 2_000_100_000,
+      },
+    },
+    additional_rate_limits: [
+      {
+        limit_name: "gpt-5.6-sol",
+        rate_limit: {
+          primary_window: {
+            used_percent: 37,
+            limit_window_seconds: 18_000,
+            reset_at: 2_000_200_000,
+          },
+          secondary_window: {
+            used_percent: 61,
+            limit_window_seconds: 604_800,
+            reset_at: 2_000_300_000,
+          },
+        },
+      },
+    ],
+  }, 1234);
+
+  assert.deepEqual(usage, {
+    remainingPercent: 39,
+    resetAtMs: 2_000_300_000_000,
+    capturedAtMs: 1234,
+  });
+});
+
+test("app server usage normalization reads the canonical weekly Codex bucket", () => {
+  const usage = normalizeAppServerRateLimits({
+    rateLimits: {
+      primary: {
+        usedPercent: 0,
+        windowDurationMins: 300,
+        resetsAt: 2_000_000_000,
+      },
+    },
+    rateLimitsByLimitId: {
+      codex_bengalfox: {
+        primary: {
+          usedPercent: 0,
+          windowDurationMins: 300,
+          resetsAt: 2_000_100_000,
+        },
+      },
+      codex: {
+        primary: {
+          usedPercent: 4,
+          windowDurationMins: 10_080,
+          resetsAt: 2_000_200_000,
+        },
+      },
+    },
+  }, 1234);
+
+  assert.deepEqual(usage, {
+    remainingPercent: 96,
+    resetAtMs: 2_000_200_000_000,
     capturedAtMs: 1234,
   });
 });

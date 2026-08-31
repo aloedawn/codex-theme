@@ -141,7 +141,7 @@ export class TargetController {
         flatten: true,
       });
       sessionId = attached.sessionId;
-      if (!sessionId) throw new Error("CDP 세션 ID를 받지 못했사옵니다.");
+      if (!sessionId) throw new Error("CDP 세션 ID를 받지 못했습니다.");
       if (!this.#isCurrent(targetId, record, generation)) {
         await this.#detachQuietly(sessionId);
         return;
@@ -167,7 +167,7 @@ export class TargetController {
         sessionId,
       );
       if (result.exceptionDetails) {
-        throw new Error(result.exceptionDetails.text ?? "주입 중 예외가 발생했사옵니다.");
+        throw new Error(result.exceptionDetails.text ?? "주입 중 예외가 발생했습니다.");
       }
       if (!this.#isCurrent(targetId, record, generation)) return;
 
@@ -181,7 +181,7 @@ export class TargetController {
       try {
         await this.onReady({ targetId, sessionId, targetInfo: record.targetInfo });
       } catch (error) {
-        this.logger.error(`[wallpaper] 적용 후 진단에 실패했사옵니다: ${error.message}`);
+        this.logger.error(`[wallpaper] 적용 후 진단에 실패했습니다: ${error.message}`);
       }
     } catch (error) {
       if (sessionId) this.sessionTargets.delete(sessionId);

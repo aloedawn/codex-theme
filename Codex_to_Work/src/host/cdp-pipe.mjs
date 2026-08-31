@@ -12,7 +12,7 @@ export class CdpPipe {
     this.output.setEncoding("utf8");
     this.output.on("data", (chunk) => this.handleChunk(chunk));
     this.output.on("error", (error) => this.failAll(error));
-    this.output.on("close", () => this.failAll(new Error("디버깅 파이프가 닫혔사옵니다.")));
+    this.output.on("close", () => this.failAll(new Error("디버깅 파이프가 닫혔습니다.")));
   }
 
   handleChunk(chunk) {
@@ -28,7 +28,7 @@ export class CdpPipe {
       try {
         message = JSON.parse(raw);
       } catch (error) {
-        console.error("[wallpaper] CDP 메시지를 해석하지 못했사옵니다:", error.message);
+        console.error("[wallpaper] CDP 메시지를 해석하지 못했습니다:", error.message);
         continue;
       }
 
@@ -61,7 +61,7 @@ export class CdpPipe {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`${method} 응답 시간이 초과되었사옵니다.`));
+        reject(new Error(`${method} 응답 시간이 초과되었습니다.`));
       }, this.requestTimeoutMs);
 
       this.pending.set(id, { resolve, reject, timeout });

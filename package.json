@@ -4,9 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.mjs",
-    "test": "node --test",
-    "check": "node scripts/build.mjs --check && node --check codex-theme.mjs && node codex-theme.mjs --dry-run"
+    "build": "npm run build:wtc && npm run build:ctw",
+    "build:wtc": "node Work_to_Codex/scripts/build.mjs",
+    "build:ctw": "node Codex_to_Work/scripts/build.mjs",
+    "test": "npm run test:wtc && npm run test:ctw",
+    "test:wtc": "node --test Work_to_Codex/test/*.test.mjs",
+    "test:ctw": "node --test Codex_to_Work/test/*.test.mjs",
+    "check": "npm run check:wtc && npm run check:ctw",
+    "check:wtc": "node Work_to_Codex/scripts/build.mjs --check && node --check Work_to_Codex/codex-theme.mjs && node Work_to_Codex/codex-theme.mjs --dry-run",
+    "check:ctw": "node Codex_to_Work/scripts/build.mjs --check && node --check Codex_to_Work/codex-theme.mjs && node Codex_to_Work/codex-theme.mjs --dry-run"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
