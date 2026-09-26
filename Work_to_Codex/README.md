@@ -156,8 +156,14 @@ Sidebar fallbacks support older profile-footer layouts.
 
 The usage gauge reads the limiting usage window: the window with the highest
 percentage used, preferring the longer window when percentages are equal.
-Reset dates use the Mac’s local timezone. The gauge stays out of Settings and
+Reset dates use the Mac’s local timezone and display as month / day. The gauge
+has extra horizontal breathing room in the rail, stays out of Settings, and
 keeps the native Help and profile controls available.
+
+Usage refreshes at launch and every 60 seconds through the app's bundled Codex
+CLI. Both the newer `Resources/codex-cli/bin/codex` layout and the older
+`Resources/codex` layout are supported. The launcher logs the selected CLI path;
+an unavailable CLI is reported explicitly instead of silently disabling polling.
 
 ## Troubleshooting
 
