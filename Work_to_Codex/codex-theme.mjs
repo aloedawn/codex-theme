@@ -288,15 +288,14 @@ var AppServerRateLimitClient = class {
     this.pendingRequests = /* @__PURE__ */ new Map();
   }
   async read(capturedAtMs = Date.now()) {
-    await this.ensureStarted();
     try {
+      await this.ensureStarted();
       const response = await this.request("account/rateLimits/read", null);
       const usage = normalizeAppServerRateLimits(response, capturedAtMs);
       if (usage == null) throw new Error("Codex 앱 서버의 한도 응답 형식이 올바르지 않습니다");
       return usage;
-    } catch (error) {
+    } finally {
       this.close();
-      throw error;
     }
   }
   async ensureStarted() {
@@ -318,11 +317,16 @@ var AppServerRateLimitClient = class {
     this.stderrBuffer = "";
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => this.handleStdout(chunk));
+    child.stdout.on("data", (chunk) => {
+      if (this.child === child) this.handleStdout(chunk);
+    });
     child.stderr.on("data", (chunk) => {
+      if (this.child !== child) return;
       this.stderrBuffer = `${this.stderrBuffer}${chunk}`.slice(-4e3);
     });
-    child.once("error", (error) => this.handleTermination(error));
+    child.once("error", (error) => {
+      if (this.child === child) this.handleTermination(error);
+    });
     child.once("exit", (code, signal) => {
       if (this.child !== child) return;
       const detail = this.stderrBuffer.trim();

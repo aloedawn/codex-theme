@@ -161,8 +161,11 @@ has extra horizontal breathing room in the rail, stays out of Settings, and
 keeps the native Help and profile controls available.
 
 Usage refreshes at launch and every 60 seconds through the app's bundled Codex
-CLI. Both the newer `Resources/codex-cli/bin/codex` layout and the older
-`Resources/codex` layout are supported. The launcher logs the selected CLI path;
+CLI. The theme starts a separate usage-only app-server process for each check
+and terminates it as soon as the check succeeds or fails, releasing its memory
+between checks. This adds a brief CLI startup to each refresh; it does not stop
+the app's own task-running server. Both the newer `Resources/codex-cli/bin/codex`
+layout and the older `Resources/codex` layout are supported. The launcher logs the selected CLI path;
 an unavailable CLI is reported explicitly instead of silently disabling polling.
 
 ## Troubleshooting
