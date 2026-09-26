@@ -1,80 +1,15 @@
 #!/usr/bin/env node
 
-// Work_to_Codex/src/main.mjs
+// src/main.mjs
 import { spawn as spawn2 } from "node:child_process";
-import fs2 from "node:fs";
-import path2 from "node:path";
+import fs4 from "node:fs";
+import path3 from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Work_to_Codex/src/host/cdp-pipe.mjs
-var CdpPipe = class {
-  constructor(child, { requestTimeoutMs = 15e3 } = {}) {
-    this.child = child;
-    this.input = child.stdio[3];
-    this.output = child.stdio[4];
-    this.requestTimeoutMs = requestTimeoutMs;
-    this.nextId = 1;
-    this.pending = /* @__PURE__ */ new Map();
-    this.buffer = "";
-    this.eventHandler = void 0;
-    this.output.setEncoding("utf8");
-    this.output.on("data", (chunk) => this.handleChunk(chunk));
-    this.output.on("error", (error) => this.failAll(error));
-    this.output.on("close", () => this.failAll(new Error("디버깅 파이프가 닫혔습니다.")));
-  }
-  handleChunk(chunk) {
-    this.buffer += chunk;
-    while (true) {
-      const separator = this.buffer.indexOf("\0");
-      if (separator < 0) break;
-      const raw = this.buffer.slice(0, separator);
-      this.buffer = this.buffer.slice(separator + 1);
-      if (!raw) continue;
-      let message;
-      try {
-        message = JSON.parse(raw);
-      } catch (error) {
-        console.error("[wallpaper] CDP 메시지를 해석하지 못했습니다:", error.message);
-        continue;
-      }
-      if (message.id != null) {
-        const pending = this.pending.get(message.id);
-        if (!pending) continue;
-        this.pending.delete(message.id);
-        clearTimeout(pending.timeout);
-        if (message.error) pending.reject(new Error(message.error.message));
-        else pending.resolve(message.result ?? {});
-      } else if (this.eventHandler) {
-        void this.eventHandler(message);
-      }
-    }
-  }
-  failAll(error) {
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(error);
-    }
-    this.pending.clear();
-  }
-  send(method, params = {}, sessionId) {
-    const id = this.nextId++;
-    const message = { id, method, params };
-    if (sessionId) message.sessionId = sessionId;
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`${method} 응답 시간이 초과되었습니다.`));
-      }, this.requestTimeoutMs);
-      this.pending.set(id, { resolve, reject, timeout });
-      this.input.write(`${JSON.stringify(message)}\0`);
-    });
-  }
-};
-
-// Work_to_Codex/src/host/rate-limit-client.mjs
+// src/host/rate-limit-client.mjs
 import { spawn } from "node:child_process";
 
-// Work_to_Codex/src/host/support.mjs
+// src/host/support.mjs
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -109,11 +44,17 @@ function parseArguments(argv, projectPath2) {
     dryRun: false,
     screenshotPath: void 0,
     exitAfterScreenshot: false,
-    inspectUi: false
+    inspectUi: false,
+    attachedAppPid: null
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === "--image") {
+    if (argument === "--attach-app") {
+      options.attachedAppPid = Number(argv[++index]);
+      if (!Number.isSafeInteger(options.attachedAppPid) || options.attachedAppPid < 2) {
+        throw new Error("Invalid attached app PID");
+      }
+    } else if (argument === "--image") {
       options.imagePath = path.resolve(argv[++index] ?? "");
     } else if (argument === "--fire") {
       options.firePath = path.resolve(argv[++index] ?? "");
@@ -248,10 +189,10 @@ function normalizeUsagePayload(payload, capturedAtMs = Date.now()) {
     payload?.rate_limit,
     ...Array.isArray(payload?.additional_rate_limits) ? payload.additional_rate_limits.map((limit) => limit?.rate_limit) : []
   ].filter((rateLimit) => rateLimit != null && typeof rateLimit === "object");
-  const windows = rateLimits.flatMap((rateLimit) => [rateLimit.primary_window, rateLimit.secondary_window]).filter((window2) => window2 != null && Number.isFinite(Number(window2.used_percent))).map((window2) => ({
-    usedPercent: Number(window2.used_percent),
-    windowSeconds: Number(window2.limit_window_seconds) || 0,
-    resetAtSeconds: Number(window2.reset_at)
+  const windows = rateLimits.flatMap((rateLimit) => [rateLimit.primary_window, rateLimit.secondary_window]).filter((window) => window != null && Number.isFinite(Number(window.used_percent))).map((window) => ({
+    usedPercent: Number(window.used_percent),
+    windowSeconds: Number(window.limit_window_seconds) || 0,
+    resetAtSeconds: Number(window.reset_at)
   }));
   if (windows.length === 0) return null;
   const limitingWindow = windows.reduce((current, candidate) => {
@@ -272,10 +213,10 @@ function normalizeUsagePayload(payload, capturedAtMs = Date.now()) {
 function normalizeAppServerRateLimits(payload, capturedAtMs = Date.now()) {
   const snapshot = payload?.rateLimitsByLimitId?.codex ?? payload?.rateLimits;
   if (snapshot == null || typeof snapshot !== "object") return null;
-  const windows = [snapshot.primary, snapshot.secondary].filter((window2) => window2 != null && Number.isFinite(Number(window2.usedPercent))).map((window2) => ({
-    usedPercent: Number(window2.usedPercent),
-    windowMinutes: Number(window2.windowDurationMins) || 0,
-    resetAtSeconds: Number(window2.resetsAt)
+  const windows = [snapshot.primary, snapshot.secondary].filter((window) => window != null && Number.isFinite(Number(window.usedPercent))).map((window) => ({
+    usedPercent: Number(window.usedPercent),
+    windowMinutes: Number(window.windowDurationMins) || 0,
+    resetAtSeconds: Number(window.resetsAt)
   }));
   if (windows.length === 0) return null;
   const limitingWindow = windows.reduce((current, candidate) => {
@@ -314,7 +255,7 @@ function writeUsageCache(cachePath, usage) {
   }
 }
 
-// Work_to_Codex/src/host/rate-limit-client.mjs
+// src/host/rate-limit-client.mjs
 var DEFAULT_REQUEST_TIMEOUT_MS = 1e4;
 var AppServerRateLimitClient = class {
   constructor(executablePath, {
@@ -468,7 +409,290 @@ var AppServerRateLimitClient = class {
   }
 };
 
-// Work_to_Codex/src/host/target-controller.mjs
+// src/host/app-launcher.mjs
+import { spawnSync } from "node:child_process";
+import fs2 from "node:fs";
+import path2 from "node:path";
+function findAppLauncher(projectPath2) {
+  const candidates = ["Codex.app", "Codex.app.noindex"].map((bundle) => path2.join(projectPath2, bundle, "Contents", "MacOS", "CodexAppLauncher"));
+  for (const candidate of candidates) {
+    try {
+      fs2.accessSync(candidate, fs2.constants.X_OK);
+      return candidate;
+    } catch {
+    }
+  }
+  throw new Error("앱 실행 보조 파일이 없습니다. ./install.sh로 Codex Theme를 다시 설치하십시오.");
+}
+function validateAppLauncher(launcherPath) {
+  const result = spawnSync(launcherPath, ["--check"], { encoding: "utf8", timeout: 5e3 });
+  if (result.error || result.status !== 0 || result.stdout.trim() !== "codex-theme-app-launcher 2") {
+    throw new Error(`앱 실행 보조 파일을 사용할 수 없습니다: ${result.error?.message || result.stderr?.trim() || "호환되지 않는 버전"}`);
+  }
+}
+
+// src/host/cdp-pipe.mjs
+var CdpPipe = class {
+  constructor(child, { requestTimeoutMs = 15e3 } = {}) {
+    this.child = child;
+    this.input = child.stdio[3];
+    this.output = child.stdio[4];
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.nextId = 1;
+    this.pending = /* @__PURE__ */ new Map();
+    this.buffer = "";
+    this.eventHandler = void 0;
+    this.closed = false;
+    this.closeError = null;
+    this.onData = (chunk) => this.handleChunk(chunk);
+    this.output.setEncoding("utf8");
+    this.output.on("data", this.onData);
+    for (const stream of [this.input, this.output]) {
+      stream.on("error", (error) => this.close(error));
+      stream.once("close", () => this.close());
+    }
+  }
+  handleChunk(chunk) {
+    if (this.closed) return;
+    this.buffer += chunk;
+    while (true) {
+      const separator = this.buffer.indexOf("\0");
+      if (separator < 0) break;
+      const raw = this.buffer.slice(0, separator);
+      this.buffer = this.buffer.slice(separator + 1);
+      if (!raw) continue;
+      let message;
+      try {
+        message = JSON.parse(raw);
+      } catch (error) {
+        console.error("[wallpaper] CDP 메시지를 해석하지 못했습니다:", error.message);
+        continue;
+      }
+      if (message.id != null) {
+        const pending = this.pending.get(message.id);
+        if (!pending) continue;
+        this.pending.delete(message.id);
+        clearTimeout(pending.timeout);
+        if (message.error) pending.reject(new Error(message.error.message));
+        else pending.resolve(message.result ?? {});
+      } else if (this.eventHandler) {
+        void Promise.resolve().then(() => this.eventHandler?.(message)).catch((error) => {
+          console.error("[wallpaper] CDP 이벤트 처리에 실패했습니다:", error.message);
+        });
+      }
+    }
+  }
+  failAll(error) {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
+    this.pending.clear();
+  }
+  close(error = new Error("디버깅 파이프가 닫혔습니다.")) {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeError = error;
+    this.eventHandler = void 0;
+    this.buffer = "";
+    this.output.off("data", this.onData);
+    this.failAll(error);
+    this.input.destroy();
+    this.output.destroy();
+  }
+  send(method, params = {}, sessionId) {
+    if (this.closed) return Promise.reject(this.closeError);
+    const id = this.nextId++;
+    const message = { id, method, params };
+    if (sessionId) message.sessionId = sessionId;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${method} 응답 시간이 초과되었습니다.`));
+      }, this.requestTimeoutMs);
+      this.pending.set(id, { resolve, reject, timeout });
+      const fail = (error) => {
+        if (!error || !this.pending.has(id)) return;
+        clearTimeout(timeout);
+        this.pending.delete(id);
+        reject(error);
+      };
+      try {
+        this.input.write(`${JSON.stringify(message)}\0`, fail);
+      } catch (error) {
+        fail(error);
+      }
+    });
+  }
+};
+
+// src/host/theme-session.mjs
+var ThemeSession = class {
+  constructor({
+    child,
+    usageClient = null,
+    createCdp = (childProcess) => new CdpPipe(childProcess),
+    processObject = process,
+    logger = console,
+    timers = { setInterval, clearInterval, setTimeout, clearTimeout }
+  }) {
+    this.child = child;
+    this.usageClient = usageClient;
+    this.createCdp = createCdp;
+    this.processObject = processObject;
+    this.logger = logger;
+    this.timers = timers;
+    this.cdp = null;
+    this.controller = null;
+    this.pendingTimers = /* @__PURE__ */ new Map();
+    this.stopped = false;
+    this.onTerminate = () => this.stop();
+    for (const event of ["SIGINT", "SIGTERM", "exit"]) {
+      processObject.once(event, this.onTerminate);
+    }
+    child.once("error", (error) => {
+      if (this.stopped) return;
+      logger.error("[wallpaper] 앱을 실행하지 못했습니다:", error.message);
+      processObject.exitCode = 1;
+      this.stop();
+    });
+    child.once("exit", (code, signal) => {
+      this.stop();
+      if (child.attached) logger.log("[wallpaper] Codex 디버깅 파이프가 닫혔습니다.");
+      else if (signal) logger.log(`[wallpaper] Codex가 ${signal} 신호로 종료되었습니다.`);
+      else logger.log(`[wallpaper] Codex가 종료되었습니다. 코드=${code ?? "unknown"}`);
+      processObject.exitCode = processObject.exitCode || code || 0;
+    });
+  }
+  async start(initialize) {
+    if (this.stopped) return;
+    try {
+      this.cdp = this.createCdp(this.child);
+      await initialize(this.cdp);
+    } catch (error) {
+      if (this.stopped) return;
+      this.processObject.exitCode = 1;
+      this.stop();
+      throw error;
+    }
+  }
+  setController(controller) {
+    if (this.stopped) controller.dispose();
+    else this.controller = controller;
+  }
+  setInterval(callback, delayMs) {
+    if (this.stopped) return null;
+    const timer = this.timers.setInterval(() => {
+      void Promise.resolve().then(() => {
+        if (!this.stopped) return callback();
+      }).catch((error) => {
+        if (!this.stopped) this.logger.error(`[wallpaper] 주기 갱신에 실패했습니다: ${error.message}`);
+      });
+    }, delayMs);
+    this.pendingTimers.set(timer, () => this.timers.clearInterval(timer));
+    return timer;
+  }
+  setTimeout(callback, delayMs) {
+    if (this.stopped) return null;
+    const timer = this.timers.setTimeout(() => {
+      this.pendingTimers.delete(timer);
+      if (!this.stopped) callback();
+    }, delayMs);
+    this.pendingTimers.set(timer, () => this.timers.clearTimeout(timer));
+    return timer;
+  }
+  delay(delayMs) {
+    if (this.stopped) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const timer = this.timers.setTimeout(() => {
+        this.pendingTimers.delete(timer);
+        resolve(true);
+      }, delayMs);
+      this.pendingTimers.set(timer, () => {
+        this.timers.clearTimeout(timer);
+        resolve(false);
+      });
+    });
+  }
+  stop() {
+    if (this.stopped) return;
+    this.stopped = true;
+    for (const event of ["SIGINT", "SIGTERM", "exit"]) {
+      this.processObject.off(event, this.onTerminate);
+    }
+    const cleanups = [
+      ...this.pendingTimers.values(),
+      () => this.controller?.dispose(),
+      () => this.cdp?.close(),
+      () => {
+        for (const stream of this.child.stdio?.slice(3, 5) ?? []) stream?.destroy();
+      },
+      () => this.usageClient?.close(),
+      () => {
+        if (this.child.exitCode == null && this.child.signalCode == null && !this.child.killed) {
+          this.child.kill("SIGTERM");
+        }
+      }
+    ];
+    this.pendingTimers.clear();
+    for (const cleanup of cleanups) {
+      try {
+        cleanup();
+      } catch (error) {
+        this.logger.error(`[wallpaper] 종료 정리에 실패했습니다: ${error.message}`);
+      }
+    }
+  }
+};
+
+// src/host/attached-app.mjs
+import { EventEmitter } from "node:events";
+import fs3 from "node:fs";
+import net2 from "node:net";
+var AttachedApp = class extends EventEmitter {
+  constructor(pid) {
+    super();
+    if (!Number.isSafeInteger(pid) || pid < 2 || pid !== process.ppid) {
+      throw new Error("The attached app must be the theme worker's parent process");
+    }
+    for (const fd of [3, 4]) {
+      const stat = fs3.fstatSync(fd);
+      if (!stat.isFIFO() && !stat.isSocket()) throw new Error("Inherited CDP pipes were not found");
+    }
+    this.pid = pid;
+    this.attached = true;
+    this.exitCode = null;
+    this.signalCode = null;
+    this.killed = false;
+    this.stdio = [
+      null,
+      null,
+      null,
+      new net2.Socket({ fd: 3, readable: false, writable: true }),
+      new net2.Socket({ fd: 4, readable: true, writable: false })
+    ];
+    const closed = () => {
+      if (this.exitCode != null) return;
+      this.exitCode = 0;
+      this.emit("exit", null, null);
+    };
+    this.stdio[4].once("end", closed);
+    this.stdio[4].once("close", closed);
+  }
+  kill(signal = "SIGTERM") {
+    if (this.killed || this.exitCode != null || process.ppid !== this.pid) return false;
+    try {
+      process.kill(this.pid, signal);
+      this.killed = true;
+      return true;
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+      return false;
+    }
+  }
+};
+
+// src/host/target-controller.mjs
 function isCodexPage(targetInfo) {
   if (targetInfo?.type !== "page") return false;
   const url = targetInfo.url ?? "";
@@ -522,7 +746,7 @@ var TargetController = class {
         attachPromise: null,
         retryTimer: null,
         retryCount: 0,
-        exhausted: false
+        state: "idle"
       };
       this.records.set(targetInfo.targetId, record);
     } else {
@@ -530,7 +754,7 @@ var TargetController = class {
       record.targetInfo = targetInfo;
       if (!wasEligible && this.eligible(targetInfo)) {
         record.retryCount = 0;
-        record.exhausted = false;
+        if (record.state === "exhausted") record.state = "idle";
       }
     }
     if (!this.eligible(targetInfo)) {
@@ -544,6 +768,7 @@ var TargetController = class {
     if (!record) return;
     record.generation += 1;
     this.#cancelRetry(record);
+    record.state = "disposed";
     if (record.sessionId) this.sessionTargets.delete(record.sessionId);
     this.records.delete(targetId);
   }
@@ -556,7 +781,7 @@ var TargetController = class {
     record.sessionId = null;
     record.generation += 1;
     record.retryCount = 0;
-    record.exhausted = false;
+    record.state = "idle";
     if (this.eligible(record.targetInfo)) this.#scheduleRetry(resolvedTargetId, record);
   }
   dispose() {
@@ -564,14 +789,16 @@ var TargetController = class {
     for (const record of this.records.values()) {
       record.generation += 1;
       this.#cancelRetry(record);
+      record.state = "disposed";
     }
     this.records.clear();
     this.sessionTargets.clear();
   }
   async #ensureAttached(targetId, record) {
-    if (this.disposed || this.records.get(targetId) !== record || record.sessionId || record.attachPromise || record.retryTimer || record.exhausted) {
+    if (this.disposed || this.records.get(targetId) !== record || !this.eligible(record.targetInfo) || record.state !== "idle" || record.attachPromise) {
       return;
     }
+    record.state = "attaching";
     const attachPromise = this.#attach(targetId, record);
     record.attachPromise = attachPromise;
     try {
@@ -579,6 +806,7 @@ var TargetController = class {
     } finally {
       if (this.records.get(targetId) === record && record.attachPromise === attachPromise) {
         record.attachPromise = null;
+        if (record.state === "idle") void this.#ensureAttached(targetId, record);
       }
     }
   }
@@ -621,7 +849,7 @@ var TargetController = class {
       await this.pushUiState(sessionId);
       if (!this.#isCurrent(targetId, record, generation)) return;
       record.retryCount = 0;
-      record.exhausted = false;
+      record.state = "attached";
       this.logger.log(
         `[wallpaper] 적용 완료: ${record.targetInfo.title || record.targetInfo.url || targetId}`
       );
@@ -634,6 +862,7 @@ var TargetController = class {
       if (sessionId) this.sessionTargets.delete(sessionId);
       if (!this.#isCurrent(targetId, record, generation)) return;
       if (record.sessionId === sessionId) record.sessionId = null;
+      record.state = "idle";
       const willRetry = this.#scheduleRetry(targetId, record);
       const prefix = willRetry ? "적용 재시도 예정" : "적용 중단";
       this.logger.error(`[wallpaper] ${prefix}: ${error.message}`);
@@ -644,27 +873,30 @@ var TargetController = class {
     return !this.disposed && this.records.get(targetId) === record && record.generation === generation;
   }
   #scheduleRetry(targetId, record) {
-    if (this.disposed || this.records.get(targetId) !== record || !this.eligible(record.targetInfo) || record.retryTimer) {
+    if (this.disposed || this.records.get(targetId) !== record || !this.eligible(record.targetInfo) || record.retryTimer != null) {
       return false;
     }
     if (record.retryCount >= this.retryDelaysMs.length) {
-      record.exhausted = true;
+      record.state = "exhausted";
       return false;
     }
     const delayMs = this.retryDelaysMs[record.retryCount];
     record.retryCount += 1;
     const generation = record.generation;
+    record.state = "retry-wait";
     record.retryTimer = this.setTimeoutFn(() => {
       if (!this.#isCurrent(targetId, record, generation)) return;
       record.retryTimer = null;
+      record.state = "idle";
       void this.#ensureAttached(targetId, record);
     }, delayMs);
     return true;
   }
   #cancelRetry(record) {
-    if (!record.retryTimer) return;
+    if (record.retryTimer == null) return;
     this.clearTimeoutFn(record.retryTimer);
     record.retryTimer = null;
+    if (record.state === "retry-wait") record.state = "idle";
   }
   async #detachQuietly(sessionId) {
     try {
@@ -674,2429 +906,12 @@ var TargetController = class {
   }
 };
 
-// Work_to_Codex/src/page/runtime.mjs
-function installPageRuntime(initialConfig) {
-  const RUNTIME_KEY = "__codexThemeRuntime";
-  const requestedVersion = Number(initialConfig?.version) || 1;
-  const existing = globalThis[RUNTIME_KEY];
-  if (existing?.version === requestedVersion) {
-    return existing.install(initialConfig);
-  }
-  let retainedState = null;
-  try {
-    retainedState = existing?.dispose?.({ preserveStyle: true }) ?? null;
-  } catch {
-  }
-  globalThis.__codexThemeUiObserver?.disconnect?.();
-  clearInterval(globalThis.__codexThemeComposerTimer);
-  clearInterval(globalThis.__codexThemeUsageTimer);
-  try {
-    globalThis.__codexThemeDisposeThumbFire?.();
-  } catch {
-  }
-  delete globalThis.__codexThemeUiObserver;
-  delete globalThis.__codexThemeComposerTimer;
-  delete globalThis.__codexThemeUsageTimer;
-  delete globalThis.__codexThemeDisposeThumbFire;
-  delete globalThis.__installCodexThemeWallpaper;
-  delete globalThis.__setCodexThemeUsage;
-  delete globalThis.__setCodexThemeLatencies;
-  delete globalThis.__prepareCodexThemeUsageProbe;
-  delete globalThis.__collectCodexThemeUsageProbe;
-  delete globalThis.__finishCodexThemeUsageProbe;
-  const runtime = createRuntime(initialConfig, retainedState);
-  globalThis[RUNTIME_KEY] = runtime;
-  return runtime.install(initialConfig);
-  function createRuntime(startingConfig, retained) {
-    const STYLE_ID = "codex-theme-style";
-    const USAGE_PANEL_ID = "codex-theme-usage-panel";
-    const OWNED_ATTRIBUTE = "data-codex-theme-owned";
-    const USAGE_CACHE_KEY = "codex-theme-usage-cache";
-    const CHAT_WORK_MODE_CACHE_KEY = "codex-theme-chat-work-mode";
-    const USAGE_REFRESH_MS = 60 * 1e3;
-    const ACTIVITY_REFRESH_MS = 500;
-    const CHAT_TURN_DIFF_REFRESH_MS = 1e3;
-    const RAINBOW_FRAME_INTERVAL_MS = 1e3 / 30;
-    const RAINBOW_ACTIVE_GRACE_MS = Number(startingConfig?.timings?.rainbowGraceMs) || 900;
-    const USAGE_ACTIVITY_GRACE_MS = Number(startingConfig?.timings?.usageGraceMs) || 1200;
-    const FIRE_FRAME_INTERVAL_MS = 250;
-    const THUMB_FIRE_GROWTH_DURATION_MS = 5 * 60 * 1e3;
-    const WALLPAPER_IMAGE_WIDTH = 2662;
-    const WALLPAPER_IMAGE_HEIGHT = 1776;
-    const THUMB_FIRE_POINTS = [
-      { side: "left", x: 404, y: 1180 },
-      { side: "right", x: 2370, y: 1174 }
-    ];
-    const RELEVANT_STRUCTURE_SELECTOR = [
-      ".app-shell-left-panel",
-      "[data-app-action-sidebar-scroll]",
-      "[data-app-action-sidebar-thread-row]",
-      "[data-app-action-sidebar-project-row]",
-      "[data-app-shell-main-surface]",
-      '[class*="_MainContentSurface_"]',
-      "[data-composer-surface-variant]",
-      "[data-codex-composer]",
-      ".codex-theme-native-chat-work-toggle",
-      "textarea",
-      '[contenteditable="true"][role="textbox"]',
-      '[contenteditable="true"][data-placeholder]'
-    ].join(",");
-    let config = { ...startingConfig };
-    let installed = false;
-    let disposed = false;
-    let domReadyHandler = null;
-    let observer = null;
-    let activityTimer = 0;
-    let usageTimer = 0;
-    let chatTurnDiffTimer = 0;
-    let nativeTurnDiffRuntime = null;
-    let nativeTurnDiffRuntimePromise = null;
-    let nativeTurnDiffRenderInFlight = false;
-    let nativeTurnDiffRenderRequested = false;
-    let nativeTurnDiffLastError = null;
-    const nativeTurnDiffRoots = /* @__PURE__ */ new Map();
-    let unifiedSidebarActive = false;
-    let unifiedSidebarLastError = null;
-    const nativeUnifiedSidebarTypes = /* @__PURE__ */ new WeakMap();
-    const unifiedSidebarFibers = /* @__PURE__ */ new Set();
-    let chatWorkToggleRuntime = null;
-    let chatWorkToggleRuntimePromise = null;
-    let chatWorkToggleRenderInFlight = false;
-    let chatWorkToggleRenderRequested = false;
-    let chatWorkToggleLastError = null;
-    let chatWorkToggleStore = null;
-    let chatWorkToggleClickHandler = null;
-    let chatWorkToggleGeneration = 0;
-    let chatWorkToggleHomeActive = false;
-    let chatWorkToggleFallback = null;
-    let chatWorkToggleTemplate = null;
-    let chatWorkToggleRect = null;
-    const nativeCodexHomeTypes = /* @__PURE__ */ new WeakMap();
-    const nativeHomeRouteTypes = /* @__PURE__ */ new WeakMap();
-    const patchedChatWorkHomeTypes = /* @__PURE__ */ new WeakMap();
-    const chatWorkToggleFibers = /* @__PURE__ */ new Map();
-    const chatWorkModeSnapshotRestores = /* @__PURE__ */ new Map();
-    let structureFrame = 0;
-    let activityFrame = 0;
-    let usageFetchInFlight = null;
-    let activityState = null;
-    let usageActivityActiveUntil = 0;
-    let composerSurface = null;
-    let composerCanvas = null;
-    let composerResizeObserver = null;
-    let composerAnimationFrame = 0;
-    let composerLastDrawTimestamp = -Infinity;
-    let composerGeometryKey = "";
-    let composerSegments = [];
-    let composerActiveUntil = 0;
-    let composerActive = false;
-    let fireSurface = null;
-    let fireLayer = null;
-    let fireImages = [];
-    let fireResizeObserver = null;
-    let fireGeometryFrame = 0;
-    let fireTimer = 0;
-    let fireActive = false;
-    let fireActiveStartedAt = 0;
-    let fireCurrentSessionKey = null;
-    const uiState = {
-      usage: retained?.usage ?? null,
-      latencies: retained?.latencies && typeof retained.latencies === "object" ? retained.latencies : {},
-      usageError: null
-    };
-    const sessionStarts = retained?.sessionStarts && typeof retained.sessionStarts === "object" ? retained.sessionStarts : /* @__PURE__ */ Object.create(null);
-    let chatWorkToggleMode = retained?.chatWorkToggleMode;
-    if (chatWorkToggleMode !== "chat" && chatWorkToggleMode !== "work") {
-      try {
-        chatWorkToggleMode = localStorage.getItem(CHAT_WORK_MODE_CACHE_KEY);
-      } catch {
-      }
-    }
-    if (chatWorkToggleMode !== "chat" && chatWorkToggleMode !== "work") {
-      chatWorkToggleMode = "work";
-    }
-    const diagnostics = {
-      installs: 0,
-      evaluations: 0,
-      refreshes: 0,
-      structureReconciles: 0,
-      activityChecks: 0,
-      observerCallbacks: 0,
-      ignoredObserverCallbacks: 0,
-      stateUpdates: 0,
-      composerCanvasCreates: 0,
-      fireLayerCreates: 0,
-      nativeTurnDiffLoads: 0,
-      nativeTurnDiffLoadErrors: 0,
-      nativeTurnDiffRenders: 0,
-      nativeTurnDiffRenderErrors: 0,
-      unifiedSidebarPatches: 0,
-      unifiedSidebarRenderRequests: 0,
-      unifiedSidebarRenderErrors: 0,
-      unifiedSidebarRestores: 0,
-      chatWorkToggleLoads: 0,
-      chatWorkToggleLoadErrors: 0,
-      chatWorkTogglePatches: 0,
-      chatWorkToggleRenderRequests: 0,
-      chatWorkToggleRenderErrors: 0,
-      chatWorkToggleRemounts: 0,
-      chatWorkToggleRestores: 0,
-      chatWorkToggleModeSwitches: 0,
-      chatWorkToggleModeSwitchErrors: 0,
-      chatWorkToggleFallbackMounts: 0,
-      chatWorkToggleFallbackRemoves: 0
-    };
-    loadCachedUsage();
-    const runtime2 = {
-      version: Number(startingConfig?.version) || 1,
-      install,
-      updateState,
-      refresh,
-      inspect,
-      dispose
-    };
-    return runtime2;
-    function loadCachedUsage() {
-      if (uiState.usage != null) return;
-      try {
-        const cached = JSON.parse(localStorage.getItem(USAGE_CACHE_KEY) || "null");
-        const cacheIsFresh = Number.isFinite(cached?.capturedAtMs) && Date.now() - cached.capturedAtMs <= 6 * 60 * 60 * 1e3;
-        const resetIsValid = !Number.isFinite(cached?.resetAtMs) || cached.resetAtMs > Date.now();
-        if (cacheIsFresh && resetIsValid) uiState.usage = cached;
-      } catch {
-      }
-    }
-    function isVisible(element) {
-      if (!(element instanceof HTMLElement)) return false;
-      const rect = element.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    }
-    function isOwnedNode(node) {
-      const element = node instanceof Element ? node : node?.parentElement;
-      if (!(element instanceof Element)) return false;
-      return element.id === STYLE_ID || element.hasAttribute(OWNED_ATTRIBUTE) || element.closest(`[${OWNED_ATTRIBUTE}="true"]`) != null;
-    }
-    function markOwned(element) {
-      if (element.getAttribute(OWNED_ATTRIBUTE) !== "true") {
-        element.setAttribute(OWNED_ATTRIBUTE, "true");
-      }
-      return element;
-    }
-    function setAttributeIfChanged(element, name, value) {
-      if (element.getAttribute(name) !== value) element.setAttribute(name, value);
-    }
-    function removeAttributeIfPresent(element, name) {
-      if (element.hasAttribute(name)) element.removeAttribute(name);
-    }
-    function setStylePropertyIfChanged(element, name, value) {
-      if (element.style.getPropertyValue(name) !== value) element.style.setProperty(name, value);
-    }
-    function shallowEqualObject(left, right) {
-      if (left === right) return true;
-      const leftKeys = Object.keys(left || {});
-      const rightKeys = Object.keys(right || {});
-      if (leftKeys.length !== rightKeys.length) return false;
-      return leftKeys.every((key) => Object.prototype.hasOwnProperty.call(right, key) && Object.is(left[key], right[key]));
-    }
-    function usageEqual(left, right) {
-      return left === right || left != null && right != null && left.remainingPercent === right.remainingPercent && left.resetAtMs === right.resetAtMs && left.resetLabel === right.resetLabel && left.capturedAtMs === right.capturedAtMs;
-    }
-    function ensureStyle() {
-      let style = document.getElementById(STYLE_ID);
-      if (!(style instanceof HTMLStyleElement)) {
-        const parent = document.head || document.documentElement;
-        if (!(parent instanceof Element)) return null;
-        style = document.createElement("style");
-        style.id = STYLE_ID;
-        markOwned(style);
-        parent.appendChild(style);
-      }
-      if (style.textContent !== config.css) style.textContent = config.css || "";
-      return style;
-    }
-    function normalizeUsagePayload2(payload) {
-      const rateLimit = payload?.rate_limit;
-      if (rateLimit == null || typeof rateLimit !== "object") return null;
-      const windows = [rateLimit.primary_window, rateLimit.secondary_window].filter((window2) => window2 != null && Number.isFinite(Number(window2.used_percent))).map((window2) => ({
-        usedPercent: Number(window2.used_percent),
-        windowSeconds: Number(window2.limit_window_seconds) || 0,
-        resetAtSeconds: Number(window2.reset_at)
-      }));
-      if (windows.length === 0) return null;
-      const limitingWindow = windows.reduce((current, candidate) => {
-        if (candidate.usedPercent > current.usedPercent) return candidate;
-        if (candidate.usedPercent === current.usedPercent && candidate.windowSeconds > current.windowSeconds) {
-          return candidate;
-        }
-        return current;
-      });
-      return {
-        remainingPercent: Math.round(
-          Math.min(100, Math.max(0, 100 - limitingWindow.usedPercent))
-        ),
-        resetAtMs: Number.isFinite(limitingWindow.resetAtSeconds) ? limitingWindow.resetAtSeconds * 1e3 : null,
-        capturedAtMs: Date.now()
-      };
-    }
-    function fetchUsagePayload() {
-      return new Promise((resolve, reject) => {
-        const bridge = globalThis.electronBridge;
-        if (typeof bridge?.sendMessageFromView !== "function") {
-          reject(new Error("앱 요청 통로를 찾지 못했습니다"));
-          return;
-        }
-        const requestId = globalThis.crypto?.randomUUID?.() || `codex-theme-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        let settled = false;
-        let timeout = 0;
-        const finish = (callback, value) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
-          window.removeEventListener("message", onMessage);
-          callback(value);
-        };
-        const onMessage = (event) => {
-          const message = event.data;
-          if (message?.type !== "fetch-response" || message.requestId !== requestId) return;
-          if (message.responseType !== "success") {
-            finish(reject, new Error(message.error || "사용량 요청이 실패했습니다"));
-            return;
-          }
-          try {
-            finish(resolve, JSON.parse(message.bodyJsonString || "null"));
-          } catch (error) {
-            finish(reject, error);
-          }
-        };
-        timeout = setTimeout(() => {
-          finish(reject, new Error("사용량 요청 시간이 초과되었습니다"));
-        }, 1e4);
-        window.addEventListener("message", onMessage);
-        Promise.resolve(bridge.sendMessageFromView({
-          type: "fetch",
-          requestId,
-          method: "GET",
-          url: "/wham/usage",
-          headers: {
-            "X-OpenAI-Attach-Auth": "1",
-            "X-OpenAI-Attach-Integrity-State": "1",
-            "OAI-Language": navigator.language || "en",
-            originator: "Codex Desktop"
-          }
-        })).catch((error) => finish(reject, error));
-      });
-    }
-    async function refreshUsage() {
-      if (disposed || usageFetchInFlight) return usageFetchInFlight;
-      usageFetchInFlight = (async () => {
-        try {
-          const usage = normalizeUsagePayload2(await fetchUsagePayload());
-          if (usage == null) throw new Error("사용량 응답 형식이 올바르지 않습니다");
-          uiState.usageError = null;
-          updateState({ usage });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (uiState.usageError !== message) {
-            uiState.usageError = message;
-            scheduleStructure("usage-error");
-          }
-        } finally {
-          usageFetchInFlight = null;
-        }
-      })();
-      return usageFetchInFlight;
-    }
-    function formatUsage(usage) {
-      if (!usage || !Number.isFinite(usage.remainingPercent)) {
-        return {
-          value: uiState.usageError ? "使用量を取得できません" : "使用量を確認中…",
-          reset: "",
-          title: uiState.usageError || "使用量を確認中です",
-          remainingPercent: 0
-        };
-      }
-      let resetLabel = "更新時刻を確認中…";
-      let resetTitle = "";
-      if (typeof usage.resetLabel === "string" && usage.resetLabel.trim()) {
-        resetLabel = `${usage.resetLabel.trim()}リセット`;
-        resetTitle = usage.resetLabel.trim();
-      } else if (Number.isFinite(usage.resetAtMs)) {
-        const resetDate = new Date(usage.resetAtMs);
-        resetLabel = `${resetDate.getMonth() + 1}月${resetDate.getDate()}日リセット`;
-        resetTitle = new Intl.DateTimeFormat("ja-JP", {
-          dateStyle: "medium",
-          timeStyle: "short"
-        }).format(resetDate);
-      }
-      return {
-        value: `${usage.remainingPercent}% 残り`,
-        reset: resetLabel,
-        title: resetTitle ? `使用量 ${usage.remainingPercent}% 残り · ${resetTitle}リセット` : `使用量 ${usage.remainingPercent}% 残り`,
-        remainingPercent: Math.min(100, Math.max(0, usage.remainingPercent))
-      };
-    }
-    function findSidebarFooterContext() {
-      const panel = document.querySelector(".app-shell-left-panel");
-      if (!(panel instanceof HTMLElement)) return null;
-      const scroll = panel.querySelector("[data-app-action-sidebar-scroll]");
-      if (!(scroll instanceof HTMLElement)) return null;
-      const profileButtons = Array.from(panel.querySelectorAll("button.sidebar-item")).filter((button) => !scroll.contains(button) && isVisible(button)).sort((left, right) => right.getBoundingClientRect().bottom - left.getBoundingClientRect().bottom);
-      const profileButton = profileButtons[0];
-      if (!(profileButton instanceof HTMLButtonElement)) return null;
-      const footerRow = profileButton.closest(".h-toolbar");
-      if (!(footerRow instanceof HTMLElement) || !panel.contains(footerRow) || !isVisible(footerRow)) {
-        return null;
-      }
-      return { footerRow, panel, profileButton, scroll };
-    }
-    function usagePanelIsAllowed() {
-      return !/^\/settings(?:\/|$)/.test(location.pathname);
-    }
-    function renderUsagePanel() {
-      if (!usagePanelIsAllowed()) {
-        document.getElementById(USAGE_PANEL_ID)?.remove();
-        return;
-      }
-      const context = findSidebarFooterContext();
-      if (context == null) {
-        document.getElementById(USAGE_PANEL_ID)?.remove();
-        return;
-      }
-      const host = context.footerRow.parentElement;
-      if (!(host instanceof HTMLElement)) return;
-      document.getElementById("codex-theme-usage-badge")?.remove();
-      for (const hiddenHelp of document.querySelectorAll('[data-codex-theme-help-hidden="true"]')) {
-        removeAttributeIfPresent(hiddenHelp, "data-codex-theme-help-hidden");
-      }
-      let panel = document.getElementById(USAGE_PANEL_ID);
-      if (!(panel instanceof HTMLElement)) {
-        panel = markOwned(document.createElement("section"));
-        panel.id = USAGE_PANEL_ID;
-        panel.setAttribute("aria-live", "polite");
-        panel.innerHTML = [
-          '<div class="codex-theme-usage-row">',
-          '<span class="codex-theme-usage-value">使用量を確認中…</span>',
-          '<span class="codex-theme-usage-reset"></span>',
-          "</div>",
-          '<div class="codex-theme-usage-track" aria-hidden="true">',
-          '<div class="codex-theme-usage-fill"></div>',
-          "</div>"
-        ].join("");
-      }
-      if (panel.parentElement !== host || panel.nextElementSibling !== context.footerRow) {
-        host.insertBefore(panel, context.footerRow);
-      }
-      const formatted = formatUsage(uiState.usage);
-      const value = panel.querySelector(".codex-theme-usage-value");
-      const reset = panel.querySelector(".codex-theme-usage-reset");
-      const fill = panel.querySelector(".codex-theme-usage-fill");
-      if (value?.textContent !== formatted.value) value.textContent = formatted.value;
-      if (reset?.textContent !== formatted.reset) reset.textContent = formatted.reset;
-      if (fill instanceof HTMLElement) {
-        const clipRight = `${100 - formatted.remainingPercent}%`;
-        setStylePropertyIfChanged(fill, "--codex-theme-usage-clip-right", clipRight);
-        setAttributeIfChanged(fill, "data-remaining-percent", String(formatted.remainingPercent));
-      }
-      if (panel.title !== formatted.title) panel.title = formatted.title;
-      setAttributeIfChanged(panel, "aria-label", formatted.title);
-    }
-    function reactFiberForElement(element) {
-      if (!(element instanceof Element)) return null;
-      for (const key of Object.getOwnPropertyNames(element)) {
-        if (key.startsWith("__reactFiber$")) return element[key] ?? null;
-        if (key.startsWith("__reactContainer$")) {
-          return element[key]?.current ?? element[key] ?? null;
-        }
-      }
-      return null;
-    }
-    function currentReactFiberRoot() {
-      const candidates = [
-        ...document.querySelectorAll(
-          '[data-app-shell-main-surface], [class*="_MainContentSurface_"]'
-        ),
-        document.body
-      ];
-      for (const candidate of candidates) {
-        let fiber = reactFiberForElement(candidate);
-        if (fiber == null) continue;
-        while (fiber.return != null) fiber = fiber.return;
-        return fiber.current ?? fiber;
-      }
-      return null;
-    }
-    function hashText(value) {
-      let hash = 2166136261;
-      for (let index = 0; index < value.length; index += 1) {
-        hash ^= value.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
-      }
-      return (hash >>> 0).toString(36);
-    }
-    function nearestTurnDiffHost(fiber) {
-      for (let current = fiber?.return; current != null; current = current.return) {
-        if (current.stateNode instanceof HTMLElement && current.stateNode.closest(
-          '[data-app-shell-main-surface], [class*="_MainContentSurface_"]'
-        ) != null) {
-          return current.stateNode;
-        }
-      }
-      return null;
-    }
-    function turnDiffItemsFromProps(props) {
-      if (props == null || typeof props !== "object") return [];
-      const candidates = [
-        props.item,
-        props.unifiedDiffItem,
-        ...Array.isArray(props.items) ? props.items : [],
-        ...Array.isArray(props.turn?.items) ? props.turn.items : [],
-        ...Array.isArray(props.turnState?.items) ? props.turnState.items : [],
-        ...Array.isArray(props.mcpTurn?.items) ? props.mcpTurn.items : []
-      ];
-      const items = [];
-      const seen = /* @__PURE__ */ new Set();
-      for (const item of candidates) {
-        if (item == null || typeof item !== "object" || item.type !== "turn-diff" || typeof item.unifiedDiff !== "string" || item.unifiedDiff.length === 0 || seen.has(item)) {
-          continue;
-        }
-        seen.add(item);
-        items.push(item);
-      }
-      return items;
-    }
-    function fiberProps(fiber) {
-      const props = fiber?.memoizedProps ?? fiber?.pendingProps;
-      return props != null && typeof props === "object" ? props : null;
-    }
-    function isNativeUnifiedSidebarType(type) {
-      if (typeof type !== "function") return false;
-      if (nativeUnifiedSidebarTypes.has(type)) return nativeUnifiedSidebarTypes.get(type);
-      let matches = false;
-      try {
-        const source = Function.prototype.toString.call(type);
-        matches = source.includes("workCloudSidebarContentVisible") && source.includes("workLocalSidebarContentVisible") && source.includes("includeChatGptProjects") && source.includes("sidebarElectron.chatGptWork.recents");
-      } catch {
-      }
-      nativeUnifiedSidebarTypes.set(type, matches);
-      return matches;
-    }
-    function nativeUnifiedSidebarFiber() {
-      const root = currentReactFiberRoot();
-      if (root == null) return null;
-      const stack = [root];
-      const visited = /* @__PURE__ */ new Set();
-      while (stack.length > 0 && visited.size < 1e5) {
-        const fiber = stack.pop();
-        if (fiber == null || visited.has(fiber)) continue;
-        visited.add(fiber);
-        if (isNativeUnifiedSidebarType(fiber.type ?? fiber.elementType)) return fiber;
-        if (fiber.sibling != null) stack.push(fiber.sibling);
-        if (fiber.child != null) stack.push(fiber.child);
-      }
-      return null;
-    }
-    function ancestorSidebarMode(fiber) {
-      for (let current = fiber?.return; current != null; current = current.return) {
-        const mode = fiberProps(current)?.sidebarMode;
-        if (mode === "codex" || mode === "chatgpt") return mode;
-      }
-      return null;
-    }
-    function trackUnifiedSidebarFiber(fiber) {
-      unifiedSidebarFibers.clear();
-      if (fiber != null) unifiedSidebarFibers.add(fiber);
-    }
-    function setFiberSidebarMode(fiber, mode) {
-      let changed = false;
-      const candidates = [fiber, fiber?.alternate].filter(Boolean);
-      for (const candidate of new Set(candidates)) {
-        for (const key of ["memoizedProps", "pendingProps"]) {
-          const props = candidate[key];
-          if (props == null || typeof props !== "object" || props.sidebarMode === mode) continue;
-          let updatedInPlace = false;
-          try {
-            props.sidebarMode = mode;
-            updatedInPlace = props.sidebarMode === mode;
-          } catch {
-          }
-          if (!updatedInPlace) candidate[key] = { ...props, sidebarMode: mode };
-          changed = true;
-        }
-      }
-      return changed;
-    }
-    function looksLikeBasicStateReducer(reducer) {
-      if (typeof reducer !== "function") return false;
-      try {
-        const source = Function.prototype.toString.call(reducer);
-        return source.includes("typeof") && source.includes("function") && source.includes("?") && source.includes(":");
-      } catch {
-        return false;
-      }
-    }
-    function requestFiberRender(fiber) {
-      let fallback = null;
-      for (const candidate of new Set([fiber, fiber?.alternate].filter(Boolean))) {
-        let hook = candidate.memoizedState;
-        const visitedHooks = /* @__PURE__ */ new Set();
-        while (hook != null && typeof hook === "object" && visitedHooks.size < 1e3) {
-          if (visitedHooks.has(hook)) break;
-          visitedHooks.add(hook);
-          const state = hook.memoizedState;
-          const queue = hook.queue;
-          if (state instanceof Map && typeof queue?.dispatch === "function") {
-            const record = { dispatch: queue.dispatch, state };
-            if (looksLikeBasicStateReducer(queue.lastRenderedReducer)) {
-              queue.dispatch(new Map(state));
-              return true;
-            }
-            fallback ??= record;
-          }
-          hook = hook.next;
-        }
-      }
-      if (fallback != null) {
-        fallback.dispatch(new Map(fallback.state));
-        return true;
-      }
-      return false;
-    }
-    function reconcileUnifiedSidebarMode() {
-      const fiber = nativeUnifiedSidebarFiber();
-      if (fiber == null) {
-        unifiedSidebarActive = false;
-        return;
-      }
-      const props = fiberProps(fiber);
-      const parentMode = ancestorSidebarMode(fiber);
-      if (props?.sidebarMode === "chatgpt") {
-        unifiedSidebarActive = parentMode === "codex";
-        if (unifiedSidebarActive) trackUnifiedSidebarFiber(fiber);
-        return;
-      }
-      if (props?.sidebarMode !== "codex") {
-        unifiedSidebarActive = false;
-        return;
-      }
-      try {
-        trackUnifiedSidebarFiber(fiber);
-        setFiberSidebarMode(fiber, "chatgpt");
-        diagnostics.unifiedSidebarPatches += 1;
-        if (requestFiberRender(fiber)) {
-          diagnostics.unifiedSidebarRenderRequests += 1;
-          unifiedSidebarLastError = null;
-        } else {
-          diagnostics.unifiedSidebarRenderErrors += 1;
-          unifiedSidebarLastError = "The native unified sidebar render queue was not found";
-        }
-        unifiedSidebarActive = true;
-      } catch (error) {
-        unifiedSidebarActive = false;
-        unifiedSidebarLastError = String(error?.stack || error);
-        diagnostics.unifiedSidebarRenderErrors += 1;
-      }
-    }
-    function restoreUnifiedSidebarMode() {
-      const liveFiber = nativeUnifiedSidebarFiber();
-      const candidates = new Set(unifiedSidebarFibers);
-      if (liveFiber != null) candidates.add(liveFiber);
-      for (const fiber of candidates) {
-        if (ancestorSidebarMode(fiber) !== "codex") continue;
-        if (fiberProps(fiber)?.sidebarMode !== "chatgpt") continue;
-        try {
-          setFiberSidebarMode(fiber, "codex");
-          requestFiberRender(fiber);
-          diagnostics.unifiedSidebarRestores += 1;
-        } catch {
-        }
-      }
-      unifiedSidebarFibers.clear();
-      unifiedSidebarActive = false;
-    }
-    function isNativeCodexHomeType(type) {
-      const originalType = patchedChatWorkHomeTypes.get(type) ?? type;
-      if (typeof originalType !== "function") return false;
-      if (nativeCodexHomeTypes.has(originalType)) {
-        return nativeCodexHomeTypes.get(originalType);
-      }
-      let matches = false;
-      try {
-        const source = Function.prototype.toString.call(originalType);
-        matches = source.includes("codexHomeAnnouncementsStorybookOverride") && source.includes("homeComposerModeToggle") && source.includes("homeComposerController") && source.includes("showHomeUtilityBar") && source.includes("home-main-content");
-      } catch {
-      }
-      nativeCodexHomeTypes.set(originalType, matches);
-      return matches;
-    }
-    function nativeCodexHomeFiber() {
-      if (!unifiedSidebarActive) return null;
-      const visibleEditors = Array.from(document.querySelectorAll(
-        '[data-codex-composer="true"], textarea, [contenteditable="true"][role="textbox"], [contenteditable="true"][data-placeholder]'
-      )).filter((element) => element instanceof HTMLElement && isVisible(element)).sort((left, right) => {
-        const leftRect = left.getBoundingClientRect();
-        const rightRect = right.getBoundingClientRect();
-        return rightRect.bottom - leftRect.bottom || rightRect.width - leftRect.width;
-      });
-      for (const editor of visibleEditors) {
-        for (let fiber = reactFiberForElement(editor); fiber != null; fiber = fiber.return) {
-          if (isNativeCodexHomeType(fiber.type ?? fiber.elementType)) return fiber;
-        }
-      }
-      const root = currentReactFiberRoot();
-      if (root == null) return null;
-      const stack = [root];
-      const visited = /* @__PURE__ */ new Set();
-      while (stack.length > 0 && visited.size < 1e5) {
-        const fiber = stack.pop();
-        if (fiber == null || visited.has(fiber)) continue;
-        visited.add(fiber);
-        if (isNativeCodexHomeType(fiber.type ?? fiber.elementType)) return fiber;
-        if (fiber.sibling != null) stack.push(fiber.sibling);
-        if (fiber.child != null) stack.push(fiber.child);
-      }
-      return null;
-    }
-    function isNativeHomeRouteType(type) {
-      if (typeof type !== "function") return false;
-      if (nativeHomeRouteTypes.has(type)) return nativeHomeRouteTypes.get(type);
-      let matches = false;
-      try {
-        const source = Function.prototype.toString.call(type);
-        matches = source.includes("HomeComposerMode") && source.includes("composerPlainTextMode") && source.includes("sharedSnapshotId") && source.includes("workOnlyModeEnabled") && source.includes("routeProjectId");
-      } catch {
-      }
-      nativeHomeRouteTypes.set(type, matches);
-      return matches;
-    }
-    function nativeHomeRouteFiber(homeFiber) {
-      for (let current = homeFiber; current != null; current = current.return) {
-        if (isNativeHomeRouteType(current.type ?? current.elementType)) return current;
-      }
-      return null;
-    }
-    function homeModeSnapshotHook(routeFiber) {
-      const candidates = [];
-      let hook = routeFiber?.memoizedState;
-      const visitedHooks = /* @__PURE__ */ new Set();
-      while (hook != null && typeof hook === "object" && visitedHooks.size < 100) {
-        if (visitedHooks.has(hook)) break;
-        visitedHooks.add(hook);
-        const memoizedState = hook.memoizedState;
-        const snapshotRuntime = Array.isArray(memoizedState) ? memoizedState[0] : null;
-        const snapshotHook = hook.next;
-        const snapshot = snapshotHook?.memoizedState;
-        if (typeof snapshotRuntime?.getSnapshot === "function" && (snapshot === "chat" || snapshot === "work")) {
-          candidates.push({ snapshotHook, snapshotRuntime });
-          if (candidates.length === 2) return candidates[1];
-        }
-        hook = hook.next;
-      }
-      return null;
-    }
-    function forcedChatWorkModeSnapshot() {
-      return chatWorkToggleMode;
-    }
-    function forceNativeHomeRouteMode(homeFiber, mode = chatWorkToggleMode) {
-      const routeFiber = nativeHomeRouteFiber(homeFiber);
-      if (routeFiber == null) return false;
-      let forced = 0;
-      for (const candidate of new Set([routeFiber, routeFiber.alternate].filter(Boolean))) {
-        const record = homeModeSnapshotHook(candidate);
-        if (record == null) continue;
-        const { snapshotHook, snapshotRuntime } = record;
-        if (!chatWorkModeSnapshotRestores.has(snapshotRuntime)) {
-          chatWorkModeSnapshotRestores.set(snapshotRuntime, snapshotRuntime.getSnapshot);
-        }
-        snapshotRuntime.getSnapshot = forcedChatWorkModeSnapshot;
-        snapshotHook.memoizedState = mode;
-        if (snapshotHook.baseState === "chat" || snapshotHook.baseState === "work") {
-          snapshotHook.baseState = mode;
-        }
-        forced += 1;
-      }
-      return forced > 0;
-    }
-    function restoreNativeHomeRouteModeSnapshots() {
-      for (const [snapshotRuntime, getSnapshot] of chatWorkModeSnapshotRestores) {
-        if (snapshotRuntime?.getSnapshot === forcedChatWorkModeSnapshot) {
-          snapshotRuntime.getSnapshot = getSnapshot;
-        }
-      }
-      chatWorkModeSnapshotRestores.clear();
-    }
-    function homeComposerStoreForFiber(homeFiber) {
-      let fallback = null;
-      for (let current = homeFiber; current != null; current = current.return) {
-        const isHomeRoute = isNativeHomeRouteType(current.type ?? current.elementType);
-        for (const candidate of new Set([current, current.alternate].filter(Boolean))) {
-          let hook = candidate.memoizedState;
-          const visitedHooks = /* @__PURE__ */ new Set();
-          while (hook != null && typeof hook === "object" && visitedHooks.size < 1e3) {
-            if (visitedHooks.has(hook)) break;
-            visitedHooks.add(hook);
-            const value = hook.memoizedState?.current;
-            if (value != null && typeof value === "object" && typeof value.get === "function" && typeof value.set === "function" && value.scope != null) {
-              if (value.value?.entrypoint === "home" && value.value?.kind === "new") {
-                return value;
-              }
-              if (isHomeRoute) fallback ??= value;
-            }
-            hook = hook.next;
-          }
-        }
-        if (isHomeRoute) break;
-      }
-      return fallback;
-    }
-    function firstDefined(current, next) {
-      return current == null && next != null ? next : current;
-    }
-    function turnDiffContext(fiber, initialProps, item) {
-      let conversationDetailLevel = initialProps?.conversationDetailLevel ?? null;
-      let conversationId = initialProps?.conversationId ?? initialProps?.turn?.conversationId ?? initialProps?.turnState?.conversationId ?? null;
-      let cwd = initialProps?.cwd ?? item.cwd ?? initialProps?.turn?.cwd ?? initialProps?.turnState?.cwd ?? null;
-      let hostId = initialProps?.hostId ?? initialProps?.turn?.hostId ?? initialProps?.turnState?.hostId ?? null;
-      let turnId = initialProps?.turnId ?? initialProps?.turn?.id ?? initialProps?.turnState?.turnId ?? null;
-      for (let current = fiber?.return; current != null; current = current.return) {
-        const props = fiberProps(current);
-        if (props == null) continue;
-        conversationDetailLevel = firstDefined(
-          conversationDetailLevel,
-          props.conversationDetailLevel
-        );
-        conversationId = firstDefined(
-          conversationId,
-          props.conversationId ?? props.turn?.conversationId ?? props.turnState?.conversationId
-        );
-        cwd = firstDefined(cwd, props.cwd ?? props.turn?.cwd ?? props.turnState?.cwd);
-        hostId = firstDefined(hostId, props.hostId ?? props.turn?.hostId ?? props.turnState?.hostId);
-        turnId = firstDefined(turnId, props.turnId ?? props.turn?.id ?? props.turnState?.turnId);
-      }
-      return { conversationDetailLevel, conversationId, cwd, hostId, turnId };
-    }
-    function reactProviderFibers(fiber) {
-      const providers = [];
-      for (let current = fiber?.return; current != null; current = current.return) {
-        if (current.tag !== 10) continue;
-        const providerType = current.elementType ?? current.type;
-        if (providerType == null) continue;
-        providers.push(current);
-      }
-      return providers;
-    }
-    function chatTurnDiffHost(fiber, context) {
-      const nearestHost = nearestTurnDiffHost(fiber);
-      if (!(nearestHost instanceof HTMLElement)) return null;
-      const contentSearchTurn = nearestHost.closest("[data-content-search-turn-key]");
-      if (contentSearchTurn instanceof HTMLElement) {
-        const contentTurnKey = contentSearchTurn.getAttribute("data-content-search-turn-key");
-        if (context.turnId == null || contentTurnKey === context.turnId) {
-          return contentSearchTurn;
-        }
-      }
-      const chatGptTurn = nearestHost.closest("[data-chatgpt-conversation-turn]");
-      if (chatGptTurn instanceof HTMLElement) return chatGptTurn;
-      return context.conversationDetailLevel === "STEPS_PROSE" ? nearestHost : null;
-    }
-    function escapeRegExp(value) {
-      return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
-    function resourceAssetUrl(pattern) {
-      try {
-        const entries = performance.getEntriesByType?.("resource") ?? [];
-        for (const entry of entries) {
-          if (typeof entry?.name === "string" && pattern.test(entry.name)) return entry.name;
-        }
-      } catch {
-      }
-      return null;
-    }
-    function linkedAssetUrl(pattern) {
-      try {
-        for (const link of document.querySelectorAll("link[href]")) {
-          const href = typeof link.href === "string" && link.href ? link.href : new URL(link.getAttribute("href"), document.baseURI).href;
-          if (pattern.test(href)) return href;
-        }
-      } catch {
-      }
-      return null;
-    }
-    function appInitialAssetUrl() {
-      const pattern = /\/app-initial-[^/]+\.js(?:[?#]|$)/;
-      return resourceAssetUrl(pattern) ?? linkedAssetUrl(pattern);
-    }
-    async function nativeTurnDiffAssetUrls() {
-      const nativeComponentPattern = /\/subagent-activity-chip-group-[^/]+\.js(?:[?#]|$)/;
-      const turnModulePattern = /\/local-conversation-turn-[^/]+\.js(?:[?#]|$)/;
-      const appInitialUrl = appInitialAssetUrl();
-      let nativeComponentUrl = resourceAssetUrl(nativeComponentPattern) ?? linkedAssetUrl(nativeComponentPattern);
-      if (nativeComponentUrl == null) {
-        const turnModuleUrl = resourceAssetUrl(turnModulePattern) ?? linkedAssetUrl(turnModulePattern);
-        if (turnModuleUrl != null) {
-          const turnModuleSource = await fetch(turnModuleUrl).then((response) => response.text());
-          const match = turnModuleSource.match(
-            /["']\.\/((?:subagent-activity-chip-group)-[^"']+\.js)["']/
-          );
-          if (match?.[1]) nativeComponentUrl = new URL(match[1], turnModuleUrl).href;
-        }
-      }
-      if (appInitialUrl == null || nativeComponentUrl == null) {
-        throw new Error("Codex native turn-diff assets were not found");
-      }
-      return { appInitialUrl, nativeComponentUrl };
-    }
-    async function chatWorkToggleAssetUrls() {
-      const appInitialUrl = appInitialAssetUrl();
-      if (appInitialUrl == null) {
-        throw new Error("Codex app-initial asset was not found");
-      }
-      const appInitialSource = await fetch(appInitialUrl).then((response) => response.text());
-      const match = appInitialSource.match(
-        /["'`]\.\/(home-composer-mode-toggle-[^"'`]+\.js)["'`]/
-      );
-      if (!match?.[1]) {
-        throw new Error("ChatGPT native Chat/Work toggle asset was not found");
-      }
-      return {
-        appInitialSource,
-        appInitialUrl,
-        nativeComponentUrl: new URL(match[1], appInitialUrl).href
-      };
-    }
-    function exportedSymbolName(source, localName) {
-      const exportBlockIndex = source.lastIndexOf("export{");
-      if (exportBlockIndex < 0) return null;
-      const aliasMatch = source.slice(exportBlockIndex).match(
-        new RegExp(`(?:^|,)${escapeRegExp(localName)} as ([A-Za-z_$][\\w$]*)`)
-      );
-      return aliasMatch?.[1] ?? null;
-    }
-    function chatWorkModeUpdaterExportName(source) {
-      const updaterMatch = source.match(
-        /function\s+([A-Za-z_$][\w$]*)\(e,t\)\{t===([`'"])chat\2&&e\.get\([^)]+\)\|\|e\.set\([^,]+,t\)\}/
-      );
-      return updaterMatch?.[1] ? exportedSymbolName(source, updaterMatch[1]) : null;
-    }
-    function reactDomFactoryExportName(source) {
-      const markerIndex = source.indexOf(".createRoot=function");
-      if (markerIndex < 0) return null;
-      const wrapperMatch = source.slice(markerIndex, markerIndex + 5e3).match(
-        /\}\)\),([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\(\(/
-      );
-      const wrapperName = wrapperMatch?.[1];
-      if (!wrapperName) return null;
-      const exportBlockIndex = source.lastIndexOf("export{");
-      if (exportBlockIndex < 0) return null;
-      const aliasMatch = source.slice(exportBlockIndex).match(
-        new RegExp(`(?:^|,)${escapeRegExp(wrapperName)} as ([A-Za-z_$][\\w$]*)`)
-      );
-      return aliasMatch?.[1] ?? null;
-    }
-    function nativeChatWorkToggleComponent(moduleNamespace) {
-      if (typeof moduleNamespace?.HomeComposerModeToggle === "function") {
-        return moduleNamespace.HomeComposerModeToggle;
-      }
-      return Object.values(moduleNamespace).find((value) => {
-        if (typeof value !== "function") return false;
-        const source = Function.prototype.toString.call(value);
-        return source.includes("composer.home.modeToggle.chat") && source.includes("composer.home.modeToggle.work") && source.includes("bg-background-mode-toggle-track");
-      }) ?? null;
-    }
-    async function loadChatWorkToggleRuntime() {
-      const testLoader = globalThis.__codexThemeChatWorkToggleLoader;
-      if (typeof testLoader === "function") {
-        const loaded = await testLoader();
-        if (typeof loaded?.component !== "function" || typeof loaded?.setMode !== "function") {
-          throw new Error("The native Chat/Work toggle test loader returned an invalid runtime");
-        }
-        return loaded;
-      }
-      const {
-        appInitialSource,
-        appInitialUrl,
-        nativeComponentUrl
-      } = await chatWorkToggleAssetUrls();
-      const [appInitialModule, componentModule] = await Promise.all([
-        import(appInitialUrl),
-        import(nativeComponentUrl)
-      ]);
-      const component = nativeChatWorkToggleComponent(componentModule);
-      if (component == null) {
-        throw new Error("ChatGPT native Chat/Work toggle component was not found");
-      }
-      const updaterExportName = chatWorkModeUpdaterExportName(appInitialSource);
-      const setMode = updaterExportName == null ? appInitialModule.e$ : appInitialModule[updaterExportName];
-      if (typeof setMode !== "function") {
-        throw new Error("Codex Home composer mode updater was not found");
-      }
-      return {
-        component,
-        setMode,
-        appInitialUrl,
-        nativeComponentUrl
-      };
-    }
-    async function ensureChatWorkToggleRuntime() {
-      if (chatWorkToggleRuntime != null) return chatWorkToggleRuntime;
-      if (chatWorkToggleRuntimePromise == null) {
-        chatWorkToggleRuntimePromise = loadChatWorkToggleRuntime().then((loaded) => {
-          chatWorkToggleRuntime = loaded;
-          chatWorkToggleLastError = null;
-          diagnostics.chatWorkToggleLoads += 1;
-          return loaded;
-        }).catch((error) => {
-          chatWorkToggleLastError = String(error?.stack || error);
-          diagnostics.chatWorkToggleLoadErrors += 1;
-          chatWorkToggleRuntimePromise = null;
-          throw error;
-        });
-      }
-      return chatWorkToggleRuntimePromise;
-    }
-    function nativeTurnDiffComponent(moduleNamespace) {
-      return Object.values(moduleNamespace).find((value) => {
-        if (typeof value !== "function") return false;
-        const source = Function.prototype.toString.call(value);
-        return source.includes("inProgressDiffSummary") && source.includes("showRevertButton") && source.includes("deferOffscreenRendering");
-      }) ?? null;
-    }
-    async function loadNativeTurnDiffRuntime() {
-      const testLoader = globalThis.__codexThemeNativeTurnDiffLoader;
-      if (typeof testLoader === "function") {
-        const loaded = await testLoader();
-        if (typeof loaded?.component !== "function" || typeof loaded?.createRoot !== "function") {
-          throw new Error("The native turn-diff test loader returned an invalid runtime");
-        }
-        return loaded;
-      }
-      const { appInitialUrl, nativeComponentUrl } = await nativeTurnDiffAssetUrls();
-      const [appInitialModule, componentModule, appInitialSource] = await Promise.all([
-        import(appInitialUrl),
-        import(nativeComponentUrl),
-        fetch(appInitialUrl).then((response) => response.text())
-      ]);
-      const component = nativeTurnDiffComponent(componentModule);
-      if (component == null) throw new Error("Codex native turn-diff component was not found");
-      const factoryExportName = reactDomFactoryExportName(appInitialSource);
-      const reactDomFactory = factoryExportName == null ? appInitialModule.mNt : appInitialModule[factoryExportName];
-      const reactDom = typeof reactDomFactory === "function" ? reactDomFactory() : null;
-      if (typeof reactDom?.createRoot !== "function") {
-        throw new Error("Codex ReactDOM createRoot runtime was not found");
-      }
-      return {
-        component,
-        createRoot: reactDom.createRoot,
-        appInitialUrl,
-        nativeComponentUrl
-      };
-    }
-    async function ensureNativeTurnDiffRuntime() {
-      if (nativeTurnDiffRuntime != null) return nativeTurnDiffRuntime;
-      if (nativeTurnDiffRuntimePromise == null) {
-        nativeTurnDiffRuntimePromise = loadNativeTurnDiffRuntime().then((loaded) => {
-          nativeTurnDiffRuntime = loaded;
-          nativeTurnDiffLastError = null;
-          diagnostics.nativeTurnDiffLoads += 1;
-          return loaded;
-        }).catch((error) => {
-          nativeTurnDiffLastError = String(error?.stack || error);
-          diagnostics.nativeTurnDiffLoadErrors += 1;
-          nativeTurnDiffRuntimePromise = null;
-          throw error;
-        });
-      }
-      return nativeTurnDiffRuntimePromise;
-    }
-    function reactElement(type, props, key = null) {
-      return {
-        $$typeof: /* @__PURE__ */ Symbol.for("react.transitional.element"),
-        type,
-        key,
-        props,
-        _owner: null
-      };
-    }
-    function saveChatWorkToggleMode(mode) {
-      chatWorkToggleMode = mode;
-      try {
-        localStorage.setItem(CHAT_WORK_MODE_CACHE_KEY, mode);
-      } catch {
-      }
-    }
-    function requestChatWorkMode(mode) {
-      if (mode !== "chat" && mode !== "work") return false;
-      const homeFiber = nativeCodexHomeFiber();
-      const store = homeComposerStoreForFiber(homeFiber) ?? chatWorkToggleStore;
-      if (chatWorkToggleRuntime == null || store == null) {
-        chatWorkToggleLastError = "The live Codex Home composer store was not found";
-        diagnostics.chatWorkToggleModeSwitchErrors += 1;
-        return false;
-      }
-      try {
-        rememberNativeChatWorkToggle();
-        saveChatWorkToggleMode(mode);
-        if (chatWorkToggleTemplate instanceof HTMLElement) {
-          updateChatWorkToggleElementMode(chatWorkToggleTemplate, mode);
-        }
-        chatWorkToggleStore = store;
-        if (!forceNativeHomeRouteMode(homeFiber, mode)) {
-          throw new Error("The native Home mode subscription was not found");
-        }
-        chatWorkToggleRuntime.setMode(store, mode === "chat" ? "work" : "chat");
-        chatWorkToggleRuntime.setMode(store, mode);
-        diagnostics.chatWorkToggleModeSwitches += 1;
-        chatWorkToggleLastError = null;
-        scheduleStructure("chat-work-mode");
-        return true;
-      } catch (error) {
-        chatWorkToggleLastError = String(error?.stack || error);
-        diagnostics.chatWorkToggleModeSwitchErrors += 1;
-        return false;
-      }
-    }
-    function nativeChatWorkToggleElement(runtime22, mode = chatWorkToggleMode) {
-      return reactElement(runtime22.component, {
-        autoFocusSelected: false,
-        className: [
-          "electron:translate-y-0.5",
-          "codex-theme-native-chat-work-toggle",
-          "pointer-events-auto",
-          "no-drag"
-        ].join(" "),
-        value: mode,
-        onValueChange: requestChatWorkMode
-      }, `codex-theme-chat-work-${mode}-${chatWorkToggleGeneration}`);
-    }
-    function nativeChatWorkToggleNode() {
-      return document.querySelector(
-        '.codex-theme-native-chat-work-toggle:not([data-codex-theme-chat-work-fallback="true"])'
-      );
-    }
-    function updateChatWorkToggleElementMode(element, mode = chatWorkToggleMode) {
-      if (!(element instanceof HTMLElement)) return;
-      const buttons = Array.from(element.querySelectorAll("button"));
-      for (let index = 0; index < buttons.length; index += 1) {
-        const buttonMode = index === 0 ? "chat" : index === 1 ? "work" : null;
-        if (buttonMode == null) continue;
-        const active = buttonMode === mode;
-        buttons[index].setAttribute("aria-pressed", String(active));
-        buttons[index].classList.toggle("text-default", active);
-        buttons[index].classList.toggle("text-mode-toggle-inactive", !active);
-        buttons[index].classList.toggle("hover:text-default", !active);
-        buttons[index].classList.toggle("focus-visible:text-default", !active);
-      }
-      const indicator = element.querySelector('span[class*="_indicator_"]');
-      if (indicator instanceof HTMLElement) {
-        indicator.style.transition = "none";
-        indicator.style.transform = mode === "chat" ? "translateX(calc((0% - 0px) * var(--mode-toggle-direction)))" : "translateX(calc((100% - 17px) * var(--mode-toggle-direction)))";
-      }
-    }
-    function removeChatWorkToggleFallback() {
-      if (chatWorkToggleFallback instanceof HTMLElement) {
-        chatWorkToggleFallback.remove();
-        diagnostics.chatWorkToggleFallbackRemoves += 1;
-      }
-      chatWorkToggleFallback = null;
-    }
-    function rememberNativeChatWorkToggle() {
-      const toggle = nativeChatWorkToggleNode();
-      if (!(toggle instanceof HTMLElement) || !toggle.isConnected) return null;
-      const rect = toggle.getBoundingClientRect();
-      chatWorkToggleRect = {
-        height: rect.height,
-        left: rect.left,
-        top: rect.top,
-        width: rect.width
-      };
-      chatWorkToggleTemplate = toggle.cloneNode(true);
-      updateChatWorkToggleElementMode(chatWorkToggleTemplate);
-      removeChatWorkToggleFallback();
-      return toggle;
-    }
-    function reconcileChatWorkToggleFallback() {
-      if (rememberNativeChatWorkToggle() != null) return;
-      if (!chatWorkToggleHomeActive || !(chatWorkToggleTemplate instanceof HTMLElement) || chatWorkToggleRect == null || !(document.body instanceof HTMLElement)) {
-        removeChatWorkToggleFallback();
-        return;
-      }
-      if (!(chatWorkToggleFallback instanceof HTMLElement) || !chatWorkToggleFallback.isConnected) {
-        chatWorkToggleFallback = chatWorkToggleTemplate.cloneNode(true);
-        markOwned(chatWorkToggleFallback);
-        chatWorkToggleFallback.setAttribute("data-codex-theme-chat-work-fallback", "true");
-        document.body.appendChild(chatWorkToggleFallback);
-        diagnostics.chatWorkToggleFallbackMounts += 1;
-      }
-      updateChatWorkToggleElementMode(chatWorkToggleFallback);
-      const { height, left, top, width } = chatWorkToggleRect;
-      Object.assign(chatWorkToggleFallback.style, {
-        height: `${height}px`,
-        left: `${left}px`,
-        margin: "0",
-        pointerEvents: "auto",
-        position: "fixed",
-        top: `${top}px`,
-        transform: "none",
-        width: `${width}px`,
-        zIndex: "2147483000"
-      });
-      chatWorkToggleFallback.style.setProperty("-webkit-app-region", "no-drag");
-    }
-    function installChatWorkToggleClickBridge() {
-      if (chatWorkToggleClickHandler != null) return;
-      chatWorkToggleClickHandler = (event) => {
-        const target = event.target instanceof Element ? event.target : null;
-        if (target?.closest(".app-shell-left-panel") != null && target.closest(`[${OWNED_ATTRIBUTE}="true"]`) == null) {
-          scheduleStructure("sidebar-navigation");
-        }
-        const button = target?.closest(".codex-theme-native-chat-work-toggle button");
-        if (!(button instanceof HTMLButtonElement) || button.disabled) return;
-        const toggle = button.closest(".codex-theme-native-chat-work-toggle");
-        if (!(toggle instanceof HTMLElement)) return;
-        const buttons = Array.from(toggle.querySelectorAll("button"));
-        const index = buttons.indexOf(button);
-        const mode = index === 0 ? "chat" : index === 1 ? "work" : null;
-        if (mode == null || button.getAttribute("aria-pressed") === "true") return;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        requestChatWorkMode(mode);
-      };
-      document.addEventListener("click", chatWorkToggleClickHandler, true);
-    }
-    function reportChatWorkToggleRenderError(error) {
-      chatWorkToggleLastError = String(error?.stack || error);
-      diagnostics.chatWorkToggleRenderErrors += 1;
-    }
-    function requestUnchangedFiberRender(fiber) {
-      const candidates = Array.from(new Set([fiber, fiber?.alternate].filter(Boolean)));
-      for (const candidate of candidates) {
-        let hook = candidate.memoizedState;
-        const visitedHooks = /* @__PURE__ */ new Set();
-        while (hook != null && typeof hook === "object" && visitedHooks.size < 1e3) {
-          if (visitedHooks.has(hook)) break;
-          visitedHooks.add(hook);
-          const queue = hook.queue;
-          if (typeof queue?.dispatch === "function" && looksLikeBasicStateReducer(queue.lastRenderedReducer)) {
-            const previousLanes = candidates.map((item) => item.lanes);
-            try {
-              for (const item of candidates) {
-                if (!Number.isFinite(item.lanes) || item.lanes === 0) item.lanes = 1;
-              }
-              queue.dispatch(hook.memoizedState);
-              return true;
-            } catch {
-              candidates.forEach((item, index) => {
-                item.lanes = previousLanes[index];
-              });
-            }
-          }
-          hook = hook.next;
-        }
-      }
-      return false;
-    }
-    function requestHomeComposerRender(runtime22, store, homeFiber) {
-      if (requestUnchangedFiberRender(homeFiber)) return true;
-      const retainedMode = chatWorkToggleMode;
-      runtime22.setMode(store, retainedMode === "chat" ? "work" : "chat");
-      runtime22.setMode(store, retainedMode);
-      return true;
-    }
-    function patchedNativeHomeType(originalType, runtime22) {
-      function CodexThemeHomeWithChatWorkMode(props) {
-        const homeMode = props?.homeComposerMode === "chat" ? "chat" : "work";
-        return originalType({
-          ...props,
-          homeComposerMode: homeMode,
-          homeComposerModeToggle: props?.homeComposerModeToggle ?? nativeChatWorkToggleElement(runtime22, homeMode)
-        });
-      }
-      patchedChatWorkHomeTypes.set(CodexThemeHomeWithChatWorkMode, originalType);
-      return CodexThemeHomeWithChatWorkMode;
-    }
-    function patchNativeChatWorkHomeFiber(fiber, runtime22) {
-      const candidates = Array.from(new Set([fiber, fiber?.alternate].filter(Boolean)));
-      const originalType = patchedChatWorkHomeTypes.get(fiber?.type) ?? patchedChatWorkHomeTypes.get(fiber?.elementType) ?? fiber?.type ?? fiber?.elementType;
-      if (typeof originalType !== "function") return false;
-      let patchedType = candidates.map((candidate) => candidate.type).find((type) => patchedChatWorkHomeTypes.get(type) === originalType);
-      patchedType ??= patchedNativeHomeType(originalType, runtime22);
-      let changed = false;
-      for (const candidate of candidates) {
-        const candidateOriginalType = patchedChatWorkHomeTypes.get(candidate.type) ?? candidate.type;
-        if (candidateOriginalType !== originalType) continue;
-        chatWorkToggleFibers.set(candidate, { originalType, patchedType });
-        if (candidate.type === patchedType) continue;
-        candidate.type = patchedType;
-        changed = true;
-      }
-      if (changed) diagnostics.chatWorkTogglePatches += 1;
-      return changed;
-    }
-    function restoreNativeChatWorkHomeFibers() {
-      const renderFibers = /* @__PURE__ */ new Set();
-      for (const [fiber, record] of chatWorkToggleFibers) {
-        if (fiber?.type !== record.patchedType) continue;
-        fiber.type = record.originalType;
-        renderFibers.add(fiber);
-        diagnostics.chatWorkToggleRestores += 1;
-      }
-      chatWorkToggleFibers.clear();
-      chatWorkToggleStore = null;
-      for (const fiber of renderFibers) requestUnchangedFiberRender(fiber);
-    }
-    async function renderNativeChatWorkToggle() {
-      if (disposed || !document.documentElement) return;
-      let homeFiber = nativeCodexHomeFiber();
-      if (homeFiber == null) {
-        chatWorkToggleHomeActive = false;
-        removeChatWorkToggleFallback();
-        restoreNativeChatWorkHomeFibers();
-        return;
-      }
-      chatWorkToggleHomeActive = true;
-      let runtime22;
-      try {
-        runtime22 = await ensureChatWorkToggleRuntime();
-      } catch {
-        return;
-      }
-      if (disposed) return;
-      homeFiber = nativeCodexHomeFiber();
-      if (homeFiber == null) {
-        chatWorkToggleHomeActive = false;
-        removeChatWorkToggleFallback();
-        restoreNativeChatWorkHomeFibers();
-        return;
-      }
-      chatWorkToggleHomeActive = true;
-      const store = homeComposerStoreForFiber(homeFiber);
-      if (store == null) {
-        throw new Error("The live Codex Home composer store was not found");
-      }
-      const storeChanged = chatWorkToggleStore !== store;
-      chatWorkToggleStore = store;
-      if (!forceNativeHomeRouteMode(homeFiber)) {
-        throw new Error("The native Home mode subscription was not found");
-      }
-      reconcileChatWorkToggleFallback();
-      const toggleMissing = nativeChatWorkToggleNode()?.isConnected !== true;
-      if (toggleMissing) {
-        chatWorkToggleGeneration += 1;
-        diagnostics.chatWorkToggleRemounts += 1;
-      }
-      const patched = patchNativeChatWorkHomeFiber(homeFiber, runtime22);
-      if (storeChanged) {
-        runtime22.setMode(
-          store,
-          chatWorkToggleMode === "chat" ? "work" : "chat"
-        );
-        runtime22.setMode(store, chatWorkToggleMode);
-      }
-      if (patched || toggleMissing) {
-        if (requestHomeComposerRender(runtime22, store, homeFiber)) {
-          diagnostics.chatWorkToggleRenderRequests += 1;
-        } else {
-          throw new Error("The native Codex Home render queue was not found");
-        }
-      }
-      chatWorkToggleLastError = null;
-    }
-    function scheduleChatWorkToggleRender() {
-      if (disposed) return;
-      if (chatWorkToggleRenderInFlight) {
-        chatWorkToggleRenderRequested = true;
-        return;
-      }
-      chatWorkToggleRenderInFlight = true;
-      void renderNativeChatWorkToggle().catch(reportChatWorkToggleRenderError).finally(() => {
-        chatWorkToggleRenderInFlight = false;
-        if (chatWorkToggleRenderRequested && !disposed) {
-          chatWorkToggleRenderRequested = false;
-          scheduleChatWorkToggleRender();
-        }
-      });
-    }
-    function nativeTurnDiffElement(runtime22, entry) {
-      let element = reactElement(runtime22.component, {
-        isInProgress: false,
-        item: entry.item,
-        deferOffscreenRendering: false,
-        conversationId: entry.context.conversationId,
-        cwd: entry.context.cwd,
-        hostId: entry.context.hostId
-      });
-      for (const provider of entry.providers) {
-        const providerType = provider.elementType ?? provider.type;
-        if (providerType == null) continue;
-        element = reactElement(providerType, {
-          value: fiberProps(provider)?.value,
-          children: element
-        });
-      }
-      return element;
-    }
-    function removeNativeTurnDiffRoot(key, record = nativeTurnDiffRoots.get(key)) {
-      if (record == null) return;
-      nativeTurnDiffRoots.delete(key);
-      try {
-        record.root.unmount();
-      } catch {
-      }
-      record.container.remove();
-    }
-    function reportNativeTurnDiffRenderError(error) {
-      nativeTurnDiffLastError = String(error?.stack || error);
-      diagnostics.nativeTurnDiffRenderErrors += 1;
-    }
-    function mountNativeTurnDiff(runtime22, entry) {
-      let record = nativeTurnDiffRoots.get(entry.key);
-      if (record != null && (record.host !== entry.host || !record.container.isConnected)) {
-        removeNativeTurnDiffRoot(entry.key, record);
-        record = null;
-      }
-      if (record == null) {
-        const container = markOwned(document.createElement("div"));
-        container.setAttribute("data-codex-theme-native-turn-diff", "true");
-        container.dataset.diffKey = entry.key;
-        entry.host.append(container);
-        const root = runtime22.createRoot(container, {
-          onCaughtError: reportNativeTurnDiffRenderError,
-          onUncaughtError: reportNativeTurnDiffRenderError,
-          onRecoverableError: reportNativeTurnDiffRenderError
-        });
-        record = { container, host: entry.host, root };
-        nativeTurnDiffRoots.set(entry.key, record);
-      }
-      try {
-        record.root.render(nativeTurnDiffElement(runtime22, entry));
-        diagnostics.nativeTurnDiffRenders += 1;
-      } catch (error) {
-        reportNativeTurnDiffRenderError(error);
-        removeNativeTurnDiffRoot(entry.key, record);
-      }
-    }
-    function discoverNativeTurnDiffs(nativeComponent = null) {
-      const root = currentReactFiberRoot();
-      if (root == null) return /* @__PURE__ */ new Map();
-      const discovered = /* @__PURE__ */ new Map();
-      const stack = [root];
-      const visited = /* @__PURE__ */ new Set();
-      while (stack.length > 0 && visited.size < 1e5) {
-        const fiber = stack.pop();
-        if (fiber == null || visited.has(fiber)) continue;
-        visited.add(fiber);
-        const props = fiberProps(fiber);
-        const items = turnDiffItemsFromProps(props);
-        if (items.length > 0) {
-          for (const item of items) {
-            const context = turnDiffContext(fiber, props, item);
-            const host = chatTurnDiffHost(fiber, context);
-            if (!(host instanceof HTMLElement)) continue;
-            if (context.conversationId == null) continue;
-            const identity = item.id || context.turnId || hashText(`${context.conversationId}
-${item.unifiedDiff}`);
-            const key = `${context.conversationId}:${identity}`;
-            const providers = reactProviderFibers(fiber);
-            const nativeAlreadyRendered = nativeComponent != null && (fiber.type === nativeComponent || fiber.elementType === nativeComponent);
-            const score = providers.length + (context.hostId != null ? 100 : 0) + (context.turnId != null ? 100 : 0) + (context.conversationDetailLevel === "STEPS_PROSE" ? 50 : 0) + (Array.isArray(item.patchBatches) ? 10 : 0);
-            const previous = discovered.get(key);
-            if (previous == null || score > previous.score) {
-              discovered.set(key, {
-                context,
-                fiber,
-                host,
-                item,
-                key,
-                nativeAlreadyRendered: nativeAlreadyRendered || previous?.nativeAlreadyRendered,
-                providers,
-                score
-              });
-            } else if (nativeAlreadyRendered) {
-              previous.nativeAlreadyRendered = true;
-            }
-          }
-        }
-        if (fiber.sibling != null) stack.push(fiber.sibling);
-        if (fiber.child != null) stack.push(fiber.child);
-      }
-      return discovered;
-    }
-    async function renderChatModeTurnDiffs() {
-      if (disposed || !document.documentElement) return;
-      for (const legacyCard of document.querySelectorAll(".codex-theme-chat-turn-diff")) {
-        legacyCard.remove();
-      }
-      let discovered = discoverNativeTurnDiffs(nativeTurnDiffRuntime?.component ?? null);
-      for (const [key, record] of nativeTurnDiffRoots) {
-        const entry = discovered.get(key);
-        if (entry == null || entry.host !== record.host) removeNativeTurnDiffRoot(key, record);
-      }
-      if (discovered.size === 0) return;
-      let runtime22;
-      try {
-        runtime22 = await ensureNativeTurnDiffRuntime();
-      } catch {
-        return;
-      }
-      if (disposed) return;
-      discovered = discoverNativeTurnDiffs(runtime22.component);
-      for (const [key, record] of nativeTurnDiffRoots) {
-        const entry = discovered.get(key);
-        if (entry == null || entry.host !== record.host || entry.nativeAlreadyRendered) {
-          removeNativeTurnDiffRoot(key, record);
-        }
-      }
-      for (const entry of discovered.values()) {
-        if (!entry.nativeAlreadyRendered && entry.host.isConnected) {
-          mountNativeTurnDiff(runtime22, entry);
-        }
-      }
-    }
-    function scheduleChatTurnDiffRender() {
-      if (disposed) return;
-      if (nativeTurnDiffRenderInFlight) {
-        nativeTurnDiffRenderRequested = true;
-        return;
-      }
-      nativeTurnDiffRenderInFlight = true;
-      void renderChatModeTurnDiffs().catch(reportNativeTurnDiffRenderError).finally(() => {
-        nativeTurnDiffRenderInFlight = false;
-        if (nativeTurnDiffRenderRequested && !disposed) {
-          nativeTurnDiffRenderRequested = false;
-          scheduleChatTurnDiffRender();
-        }
-      });
-    }
-    function serverSignalBars(latency) {
-      if (!Number.isFinite(latency)) return 0;
-      if (latency <= 40) return 4;
-      if (latency <= 100) return 3;
-      if (latency <= 250) return 2;
-      return 1;
-    }
-    function createServerSignal(alias) {
-      const signal = markOwned(document.createElement("span"));
-      signal.className = "codex-theme-server-signal";
-      signal.dataset.hostAlias = alias;
-      signal.setAttribute("role", "img");
-      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-      svg.setAttribute("viewBox", "0 0 16 16");
-      svg.setAttribute("aria-hidden", "true");
-      const bars = [
-        { x: 1, y: 11, width: 2.5, height: 4 },
-        { x: 4.8, y: 8, width: 2.5, height: 7 },
-        { x: 8.6, y: 5, width: 2.5, height: 10 },
-        { x: 12.4, y: 2, width: 2.5, height: 13 }
-      ];
-      bars.forEach((bar, index) => {
-        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        rect.classList.add("codex-theme-server-signal-bar");
-        rect.dataset.index = String(index + 1);
-        rect.setAttribute("x", String(bar.x));
-        rect.setAttribute("y", String(bar.y));
-        rect.setAttribute("width", String(bar.width));
-        rect.setAttribute("height", String(bar.height));
-        rect.setAttribute("rx", "1.25");
-        svg.appendChild(rect);
-      });
-      signal.appendChild(svg);
-      return signal;
-    }
-    function findServerLabel(scroll, panelRect, alias) {
-      const normalizedAlias = alias.toLocaleLowerCase();
-      const matches = [];
-      const walker = document.createTreeWalker(scroll, NodeFilter.SHOW_TEXT);
-      let textNode;
-      while (textNode = walker.nextNode()) {
-        if (textNode.nodeValue?.trim().toLocaleLowerCase() !== normalizedAlias) continue;
-        const parent = textNode.parentElement;
-        if (!(parent instanceof HTMLElement) || isOwnedNode(parent) || !isVisible(parent)) continue;
-        const rect = parent.getBoundingClientRect();
-        if (rect.left < panelRect.left + panelRect.width * 0.38) continue;
-        matches.push(parent);
-      }
-      matches.sort((left, right) => right.getBoundingClientRect().left - left.getBoundingClientRect().left);
-      return matches[0] ?? null;
-    }
-    function renderServerLatencies() {
-      const panel = document.querySelector(".app-shell-left-panel");
-      const scroll = panel?.querySelector("[data-app-action-sidebar-scroll]");
-      if (!(panel instanceof HTMLElement) || !(scroll instanceof HTMLElement)) return;
-      const latencies = uiState.latencies || {};
-      const panelRect = panel.getBoundingClientRect();
-      const desiredSignals = /* @__PURE__ */ new Set();
-      const desiredNativeStatuses = /* @__PURE__ */ new Set();
-      const existingSignals = new Map(
-        Array.from(scroll.querySelectorAll(".codex-theme-server-signal")).filter((signal) => signal instanceof HTMLElement).map((signal) => [signal.dataset.hostAlias, signal])
-      );
-      for (const [alias, latency] of Object.entries(latencies)) {
-        let signal = existingSignals.get(alias);
-        let label = signal instanceof HTMLElement ? signal.previousElementSibling : null;
-        if (!(label instanceof HTMLElement) || isOwnedNode(label)) {
-          label = findServerLabel(scroll, panelRect, alias);
-        }
-        if (!(label instanceof HTMLElement)) continue;
-        if (!(signal instanceof HTMLElement)) signal = createServerSignal(alias);
-        if (signal.previousElementSibling !== label) label.insertAdjacentElement("afterend", signal);
-        desiredSignals.add(signal);
-        const nativeStatus = label.parentElement?.querySelector(":scope > .sidebar-item-icon");
-        if (nativeStatus instanceof HTMLElement && nativeStatus !== signal) {
-          desiredNativeStatuses.add(nativeStatus);
-          setAttributeIfChanged(nativeStatus, "data-codex-theme-native-server-status", "true");
-        }
-        const barCount = serverSignalBars(latency);
-        setAttributeIfChanged(signal, "data-bars", String(barCount));
-        for (const bar of signal.querySelectorAll(".codex-theme-server-signal-bar")) {
-          const index = Number(bar.getAttribute("data-index"));
-          setAttributeIfChanged(bar, "data-active", index <= barCount ? "true" : "false");
-        }
-        const roundedLatency = Number.isFinite(latency) ? Math.round(latency) : null;
-        const description = roundedLatency == null ? "未接続、信号 0/4" : `応答 ${roundedLatency}ミリ秒、信号 ${barCount}/4`;
-        setAttributeIfChanged(signal, "aria-label", description);
-        if (signal.title !== description) signal.title = description;
-      }
-      for (const signal of existingSignals.values()) {
-        if (!desiredSignals.has(signal)) signal.remove();
-      }
-      for (const nativeStatus of scroll.querySelectorAll(
-        '[data-codex-theme-native-server-status="true"]'
-      )) {
-        if (!desiredNativeStatuses.has(nativeStatus)) {
-          removeAttributeIfPresent(nativeStatus, "data-codex-theme-native-server-status");
-        }
-      }
-    }
-    function findComposerSurface() {
-      const editors = Array.from(document.querySelectorAll(
-        '[data-codex-composer="true"], textarea, [contenteditable="true"][role="textbox"], [contenteditable="true"][data-placeholder]'
-      )).filter((element) => {
-        if (!(element instanceof HTMLElement) || !isVisible(element)) return false;
-        const rect = element.getBoundingClientRect();
-        return rect.width >= 240 && rect.height >= 20;
-      }).sort((left, right) => {
-        const leftRect = left.getBoundingClientRect();
-        const rightRect = right.getBoundingClientRect();
-        return rightRect.bottom - leftRect.bottom || rightRect.width - leftRect.width;
-      });
-      const editor = editors[0];
-      if (!(editor instanceof HTMLElement)) return null;
-      const layoutRoot = editor.closest(
-        "[data-composer-layout][data-composer-surface-variant]"
-      );
-      if (layoutRoot instanceof HTMLElement && isVisible(layoutRoot)) {
-        for (let surface2 = editor.parentElement; surface2 && layoutRoot.contains(surface2); surface2 = surface2.parentElement) {
-          const rect = surface2.getBoundingClientRect();
-          const radius = Number.parseFloat(getComputedStyle(surface2).borderRadius);
-          if (rect.width >= 320 && rect.height >= 48 && rect.height <= 260 && Number.isFinite(radius) && radius >= 8 && surface2.querySelector("button")) {
-            return surface2;
-          }
-          if (surface2 === layoutRoot) break;
-        }
-        return layoutRoot;
-      }
-      if (composerSurface instanceof HTMLElement && composerSurface.isConnected && isVisible(composerSurface) && composerSurface.contains(editor)) {
-        return composerSurface;
-      }
-      const form = editor.closest("form");
-      if (form instanceof HTMLElement && isVisible(form)) return form;
-      let surface = editor.parentElement;
-      let candidate = null;
-      for (let depth = 0; surface && depth < 8; depth += 1, surface = surface.parentElement) {
-        const rect = surface.getBoundingClientRect();
-        if (rect.width >= 320 && rect.height >= 48 && rect.height <= 260 && surface.querySelector("button")) {
-          candidate = surface;
-        }
-        if (rect.width >= window.innerWidth * 0.92) break;
-      }
-      return candidate;
-    }
-    function composerIsActive(surface) {
-      if (!(surface instanceof HTMLElement)) return false;
-      if (config.rainbowPreview) return true;
-      const stopPattern = /(?:stop|cancel|interrupt|停止|中止|キャンセル|중지|정지|취소)/i;
-      const controls = Array.from(surface.querySelectorAll("button, [role=button]")).filter((element) => element instanceof HTMLElement && isVisible(element));
-      if (controls.some((element) => stopPattern.test([
-        element.getAttribute("aria-label"),
-        element.getAttribute("title"),
-        element.getAttribute("data-testid"),
-        element.textContent
-      ].filter(Boolean).join(" ")))) {
-        return true;
-      }
-      return surface.querySelector(
-        '[aria-busy="true"], [data-state="streaming"], [data-status="running"]'
-      ) != null;
-    }
-    function setComposerSurface(nextSurface) {
-      if (composerSurface === nextSurface && composerCanvas?.isConnected) return;
-      stopComposerAnimation();
-      composerResizeObserver?.disconnect();
-      composerResizeObserver = null;
-      if (composerSurface instanceof HTMLElement) {
-        removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-composer");
-        removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-active");
-      }
-      composerCanvas?.remove();
-      composerSurface = nextSurface instanceof HTMLElement ? nextSurface : null;
-      composerCanvas = null;
-      composerGeometryKey = "";
-      composerSegments = [];
-      composerActive = false;
-      composerActiveUntil = 0;
-      if (!(composerSurface instanceof HTMLElement)) return;
-      setAttributeIfChanged(composerSurface, "data-codex-theme-rainbow-composer", "attached");
-      setAttributeIfChanged(composerSurface, "data-codex-theme-rainbow-active", "false");
-      const canvas = markOwned(document.createElement("canvas"));
-      canvas.className = "codex-theme-rainbow-canvas";
-      canvas.setAttribute("aria-hidden", "true");
-      canvas.setAttribute("data-effect", "surface-fill");
-      composerSurface.appendChild(canvas);
-      composerCanvas = canvas;
-      diagnostics.composerCanvasCreates += 1;
-      if (typeof ResizeObserver === "function") {
-        composerResizeObserver = new ResizeObserver(() => {
-          composerGeometryKey = "";
-          if (composerActive) drawRainbowFrame(performance.now());
-        });
-        composerResizeObserver.observe(composerSurface);
-      }
-    }
-    function drawRainbowFrame(timestamp) {
-      if (!(composerCanvas instanceof HTMLCanvasElement) || !(composerSurface instanceof HTMLElement)) {
-        return;
-      }
-      const canvasRect = composerCanvas.getBoundingClientRect();
-      const surfaceRect = composerSurface.getBoundingClientRect();
-      const cssWidth = canvasRect.width || surfaceRect.width;
-      const cssHeight = canvasRect.height || surfaceRect.height;
-      if (cssWidth < 2 || cssHeight < 2) return;
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-      const pixelWidth = Math.round(cssWidth * pixelRatio);
-      const pixelHeight = Math.round(cssHeight * pixelRatio);
-      if (composerCanvas.width !== pixelWidth || composerCanvas.height !== pixelHeight) {
-        composerCanvas.width = pixelWidth;
-        composerCanvas.height = pixelHeight;
-      }
-      const context = composerCanvas.getContext("2d");
-      if (context == null) return;
-      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-      context.clearRect(0, 0, cssWidth, cssHeight);
-      const metricsKey = `${Math.round(cssWidth * 10)}x${Math.round(cssHeight * 10)}`;
-      const surfaceStyle = getComputedStyle(composerSurface);
-      const measuredRadius = Number.parseFloat(surfaceStyle.borderTopLeftRadius) || Number.parseFloat(surfaceStyle.borderRadius) || Math.min(25, cssHeight / 2);
-      const clippedRadius = Math.min(
-        Math.max(measuredRadius, 0),
-        cssWidth / 2,
-        cssHeight / 2
-      );
-      setStylePropertyIfChanged(
-        composerCanvas,
-        "--codex-theme-composer-radius",
-        `${clippedRadius}px`
-      );
-      const segmentCount = Math.min(480, Math.max(180, Math.ceil(cssWidth / 3)));
-      const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-      const duration = reducedMotion ? 8e3 : 2400;
-      const phase = timestamp % duration / duration;
-      const geometryKey = `${metricsKey}:${segmentCount}`;
-      if (composerGeometryKey !== geometryKey) {
-        composerGeometryKey = geometryKey;
-        const bandWidth = cssWidth / segmentCount;
-        composerSegments = Array.from({ length: segmentCount }, (_, index) => ({
-          x: index * bandWidth,
-          width: bandWidth + 1
-        }));
-      }
-      for (let index = 0; index < composerSegments.length; index += 1) {
-        const segment = composerSegments[index];
-        const hue = ((index / segmentCount - phase) * 360 + 360) % 360;
-        context.fillStyle = `hsl(${hue}deg 100% 58%)`;
-        context.fillRect(segment.x, 0, segment.width, cssHeight);
-      }
-      setAttributeIfChanged(composerCanvas, "data-ready", "true");
-      setAttributeIfChanged(composerCanvas, "data-pixel-ratio", String(pixelRatio));
-      setAttributeIfChanged(composerCanvas, "data-segment-count", String(segmentCount));
-    }
-    function animateComposer(timestamp) {
-      if (disposed || !composerActive || !(composerCanvas instanceof HTMLCanvasElement) || !composerCanvas.isConnected || !(composerSurface instanceof HTMLElement)) {
-        composerAnimationFrame = 0;
-        return;
-      }
-      if (timestamp - composerLastDrawTimestamp >= RAINBOW_FRAME_INTERVAL_MS) {
-        drawRainbowFrame(timestamp);
-        composerLastDrawTimestamp = timestamp;
-      }
-      composerAnimationFrame = requestAnimationFrame(animateComposer);
-    }
-    function startComposerAnimation() {
-      if (composerAnimationFrame || !composerActive) return;
-      composerLastDrawTimestamp = -Infinity;
-      composerAnimationFrame = requestAnimationFrame(animateComposer);
-    }
-    function stopComposerAnimation() {
-      if (composerAnimationFrame) cancelAnimationFrame(composerAnimationFrame);
-      composerAnimationFrame = 0;
-      composerLastDrawTimestamp = -Infinity;
-    }
-    function setComposerActive(active) {
-      if (!(composerSurface instanceof HTMLElement)) active = false;
-      if (composerActive === active) return;
-      composerActive = active;
-      if (composerSurface instanceof HTMLElement) {
-        setAttributeIfChanged(
-          composerSurface,
-          "data-codex-theme-rainbow-active",
-          active ? "true" : "false"
-        );
-      }
-      if (active) startComposerAnimation();
-      else stopComposerAnimation();
-    }
-    function findMainSurface() {
-      const visibleSurfaces = (selector) => Array.from(document.querySelectorAll(selector)).filter((surface) => surface instanceof HTMLElement && isVisible(surface));
-      const currentSurfaces = visibleSurfaces("[data-app-shell-main-surface]");
-      const candidates = currentSurfaces.length > 0 ? currentSurfaces : visibleSurfaces('[class*="_MainContentSurface_"]');
-      return candidates.sort((left, right) => {
-        const leftRect = left.getBoundingClientRect();
-        const rightRect = right.getBoundingClientRect();
-        return rightRect.width * rightRect.height - leftRect.width * leftRect.height;
-      })[0] ?? null;
-    }
-    function setFireSurface(nextSurface) {
-      if (fireSurface === nextSurface && fireSurface?.isConnected) {
-        setAttributeIfChanged(fireSurface, "data-codex-theme-wallpaper-root", "true");
-        return;
-      }
-      fireResizeObserver?.disconnect();
-      fireResizeObserver = null;
-      fireLayer?.remove();
-      fireLayer = null;
-      fireImages = [];
-      if (fireSurface instanceof HTMLElement) {
-        removeAttributeIfPresent(fireSurface, "data-codex-theme-wallpaper-root");
-      }
-      fireSurface = nextSurface instanceof HTMLElement ? nextSurface : null;
-      if (!(fireSurface instanceof HTMLElement)) return;
-      setAttributeIfChanged(fireSurface, "data-codex-theme-wallpaper-root", "true");
-      if (typeof ResizeObserver === "function") {
-        fireResizeObserver = new ResizeObserver(scheduleFireGeometry);
-        fireResizeObserver.observe(fireSurface);
-      }
-      if (fireActive) {
-        ensureFireLayer();
-        scheduleFireGeometry();
-      }
-    }
-    function ensureFireLayer() {
-      if (!(fireSurface instanceof HTMLElement) || fireLayer?.isConnected && fireImages.length === THUMB_FIRE_POINTS.length && fireImages.every((fire) => fire.image.isConnected)) {
-        return;
-      }
-      fireLayer?.remove();
-      const layer = markOwned(document.createElement("div"));
-      layer.className = "codex-theme-thumb-fire-layer";
-      layer.setAttribute("aria-hidden", "true");
-      fireSurface.prepend(layer);
-      fireLayer = layer;
-      fireImages = THUMB_FIRE_POINTS.map((point) => {
-        const image = markOwned(document.createElement("img"));
-        image.className = "codex-theme-thumb-fire";
-        image.dataset.side = point.side;
-        image.alt = "";
-        image.draggable = false;
-        image.decoding = "async";
-        image.setAttribute("aria-hidden", "true");
-        image.addEventListener("load", () => {
-          setAttributeIfChanged(image, "data-ready", "true");
-          scheduleFireGeometry();
-        });
-        image.src = config.fireDataUrl || "";
-        if (image.complete && image.naturalWidth > 0) {
-          setAttributeIfChanged(image, "data-ready", "true");
-        }
-        layer.appendChild(image);
-        return { image, point, scaleX: 1, scaleY: 1 };
-      });
-      diagnostics.fireLayerCreates += 1;
-    }
-    function updateFireAsset() {
-      for (const fire of fireImages) {
-        if (fire.image.src === config.fireDataUrl) continue;
-        removeAttributeIfPresent(fire.image, "data-ready");
-        fire.image.src = config.fireDataUrl || "";
-      }
-    }
-    function scheduleFireGeometry() {
-      if (disposed || fireGeometryFrame) return;
-      fireGeometryFrame = requestAnimationFrame(() => {
-        fireGeometryFrame = 0;
-        positionFireImages();
-      });
-    }
-    function positionFireImages() {
-      if (!(fireSurface instanceof HTMLElement) || !(fireLayer instanceof HTMLElement) || !isVisible(fireSurface)) {
-        return false;
-      }
-      const surfaceRect = fireSurface.getBoundingClientRect();
-      const scale = Math.max(
-        surfaceRect.width / WALLPAPER_IMAGE_WIDTH,
-        surfaceRect.height / WALLPAPER_IMAGE_HEIGHT
-      );
-      const imageWidth = WALLPAPER_IMAGE_WIDTH * scale;
-      const imageHeight = WALLPAPER_IMAGE_HEIGHT * scale;
-      const imageOffsetX = (surfaceRect.width - imageWidth) / 2;
-      const imageOffsetY = (surfaceRect.height - imageHeight) / 2;
-      const baseWidth = Math.max(72, Math.min(112, 160 * scale));
-      const baseHeight = Math.max(118, Math.min(180, 255 * scale));
-      const elapsedMs = fireActive && fireActiveStartedAt > 0 ? Math.max(0, Date.now() - fireActiveStartedAt) : 0;
-      const growthStepCount = Math.max(1, Math.round(THUMB_FIRE_GROWTH_DURATION_MS / 1e3));
-      const growthStep = Math.min(growthStepCount, Math.floor(elapsedMs / 1e3));
-      const growthProgress = growthStep / growthStepCount;
-      const easedGrowth = Math.pow(growthProgress, 0.72);
-      const secondPhase = elapsedMs % 1e3 / 1e3;
-      const secondPulse = Math.sin(secondPhase * Math.PI);
-      const pulseScaleX = 1 + secondPulse * (0.035 + growthProgress * 0.075);
-      const pulseScaleY = 1 + secondPulse * (0.025 + growthProgress * 0.055);
-      const previousCanvasWidth = baseWidth * 2;
-      const previousCanvasHeight = baseHeight * 2.35;
-      const maximumScaleX = Math.max(1, surfaceRect.width * 0.9 / previousCanvasWidth);
-      const maximumScaleY = Math.max(1, surfaceRect.height * 1.12 / previousCanvasHeight);
-      const transformScaleX = (1 + easedGrowth) * (1 + easedGrowth * (maximumScaleX - 1)) * pulseScaleX;
-      const transformScaleY = (1 + easedGrowth * 1.35) * (1 + easedGrowth * (maximumScaleY - 1)) * pulseScaleY;
-      for (const fire of fireImages) {
-        const anchorX = imageOffsetX + fire.point.x * scale;
-        const anchorY = imageOffsetY + fire.point.y * scale;
-        setStylePropertyIfChanged(
-          fire.image,
-          "left",
-          `${Math.round((anchorX - baseWidth / 2) * 10) / 10}px`
-        );
-        setStylePropertyIfChanged(
-          fire.image,
-          "top",
-          `${Math.round((anchorY - baseHeight) * 10) / 10}px`
-        );
-        setStylePropertyIfChanged(fire.image, "width", `${Math.round(baseWidth * 10) / 10}px`);
-        setStylePropertyIfChanged(fire.image, "height", `${Math.round(baseHeight * 10) / 10}px`);
-        setStylePropertyIfChanged(
-          fire.image,
-          "--codex-theme-fire-scale-x",
-          String(transformScaleX)
-        );
-        setStylePropertyIfChanged(
-          fire.image,
-          "--codex-theme-fire-scale-y",
-          String(transformScaleY)
-        );
-        fire.scaleX = transformScaleX;
-        fire.scaleY = transformScaleY;
-      }
-      return true;
-    }
-    function startFireTimer() {
-      if (fireTimer) return;
-      fireTimer = setInterval(scheduleFireGeometry, FIRE_FRAME_INTERVAL_MS);
-    }
-    function stopFireTimer() {
-      if (fireTimer) clearInterval(fireTimer);
-      fireTimer = 0;
-    }
-    function currentSessionIdentity() {
-      const threadRows = Array.from(document.querySelectorAll(
-        "[data-app-action-sidebar-thread-row]"
-      )).filter((row) => row instanceof HTMLElement);
-      const currentThread = threadRows.find(
-        (row) => row.dataset.appActionSidebarThreadActive === "true"
-      ) || threadRows.find((row) => row.getAttribute("aria-current") === "page");
-      if (currentThread instanceof HTMLElement) {
-        const threadId = currentThread.dataset.appActionSidebarThreadId;
-        const projectList = currentThread.closest("[data-app-action-sidebar-project-list-id]");
-        const projectId2 = projectList instanceof HTMLElement ? projectList.dataset.appActionSidebarProjectListId : null;
-        if (threadId) {
-          return { key: `thread:${threadId}`, fallbackKey: projectId2 ? `project:${projectId2}` : null };
-        }
-      }
-      const projectRows = Array.from(document.querySelectorAll(
-        "[data-app-action-sidebar-project-row]"
-      )).filter((row) => row instanceof HTMLElement);
-      const currentProject = projectRows.find((row) => row.getAttribute("aria-current") === "page");
-      const projectId = currentProject?.dataset.appActionSidebarProjectId;
-      if (projectId) return { key: `project:${projectId}`, fallbackKey: null };
-      return { key: "view:unkeyed", fallbackKey: null };
-    }
-    function pruneSessionStarts() {
-      const entries = Object.entries(sessionStarts).filter((entry) => Number.isFinite(entry[1])).sort((left, right) => right[1] - left[1]);
-      for (const [key] of entries.slice(32)) delete sessionStarts[key];
-    }
-    function setFireActive(active, identity) {
-      const sessionKey = identity?.key || "view:unkeyed";
-      if (active) {
-        if (!(fireSurface instanceof HTMLElement) || !fireSurface.isConnected) {
-          setFireSurface(findMainSurface());
-        }
-        if (!(fireSurface instanceof HTMLElement)) return;
-        let startedAt = sessionStarts[sessionKey];
-        if (!Number.isFinite(startedAt) && identity?.fallbackKey) {
-          startedAt = sessionStarts[identity.fallbackKey];
-        }
-        if (!Number.isFinite(startedAt)) startedAt = Date.now();
-        sessionStarts[sessionKey] = startedAt;
-        pruneSessionStarts();
-        fireCurrentSessionKey = sessionKey;
-        fireActiveStartedAt = startedAt;
-        fireActive = true;
-        ensureFireLayer();
-        for (const fire of fireImages) {
-          setAttributeIfChanged(fire.image, "data-active", "true");
-        }
-        startFireTimer();
-        scheduleFireGeometry();
-        return;
-      }
-      if (identity?.key) delete sessionStarts[identity.key];
-      if (!fireActive) return;
-      fireActive = false;
-      fireActiveStartedAt = 0;
-      fireCurrentSessionKey = null;
-      for (const fire of fireImages) removeAttributeIfPresent(fire.image, "data-active");
-      stopFireTimer();
-    }
-    function rowHasActiveSessionIndicator(row) {
-      return row.querySelector('[aria-label="Subscribed: active"]') != null || Array.from(row.querySelectorAll('.animate-spin, [style*="animation-duration"]')).some((element) => {
-        if (!(element instanceof HTMLElement)) return false;
-        const duration = element.style.animationDuration;
-        const statusContainer = element.parentElement;
-        return element.querySelector("svg") != null && (duration === "2000ms" || element.classList.contains("animate-spin") && statusContainer?.classList.contains("text-token-foreground/70") === true);
-      });
-    }
-    function activeSidebarSessionRows() {
-      const seenThreadIds = /* @__PURE__ */ new Set();
-      return Array.from(document.querySelectorAll("[data-app-action-sidebar-thread-row]")).filter((row) => {
-        if (!(row instanceof HTMLElement) || !rowHasActiveSessionIndicator(row)) return false;
-        const threadId = row.dataset.appActionSidebarThreadId;
-        if (!threadId) return true;
-        if (seenThreadIds.has(threadId)) return false;
-        seenThreadIds.add(threadId);
-        return true;
-      });
-    }
-    function activeCollapsedProjectRows() {
-      const seenProjectIds = /* @__PURE__ */ new Set();
-      return Array.from(document.querySelectorAll(
-        '[data-app-action-sidebar-project-row][data-app-action-sidebar-project-collapsed="true"]'
-      )).filter((row) => {
-        if (!(row instanceof HTMLElement) || !rowHasActiveSessionIndicator(row)) return false;
-        const projectId = row.dataset.appActionSidebarProjectId;
-        if (!projectId) return true;
-        if (seenProjectIds.has(projectId)) return false;
-        seenProjectIds.add(projectId);
-        return true;
-      });
-    }
-    function retainActiveSessions(activeThreadRows, activeProjectRows) {
-      const now = Date.now();
-      const activeThreadIds = /* @__PURE__ */ new Set();
-      for (const row of activeThreadRows) {
-        const threadId = row.dataset.appActionSidebarThreadId;
-        if (!threadId) continue;
-        activeThreadIds.add(threadId);
-        const threadKey = `thread:${threadId}`;
-        const projectList = row.closest("[data-app-action-sidebar-project-list-id]");
-        const projectId = projectList instanceof HTMLElement ? projectList.dataset.appActionSidebarProjectListId : null;
-        const projectKey = projectId ? `project:${projectId}` : null;
-        const inheritedStart = Number.isFinite(sessionStarts[threadKey]) ? sessionStarts[threadKey] : projectKey && Number.isFinite(sessionStarts[projectKey]) ? sessionStarts[projectKey] : now;
-        sessionStarts[threadKey] = inheritedStart;
-        if (projectKey && !Number.isFinite(sessionStarts[projectKey])) {
-          sessionStarts[projectKey] = inheritedStart;
-        }
-      }
-      for (const row of activeProjectRows) {
-        const projectId = row.dataset.appActionSidebarProjectId;
-        if (!projectId) continue;
-        const projectKey = `project:${projectId}`;
-        if (!Number.isFinite(sessionStarts[projectKey])) sessionStarts[projectKey] = now;
-      }
-      for (const row of document.querySelectorAll("[data-app-action-sidebar-thread-row]")) {
-        if (!(row instanceof HTMLElement)) continue;
-        const threadId = row.dataset.appActionSidebarThreadId;
-        if (threadId && !activeThreadIds.has(threadId) && row.dataset.appActionSidebarThreadActive !== "true") {
-          delete sessionStarts[`thread:${threadId}`];
-        }
-      }
-      pruneSessionStarts();
-    }
-    function setUsageActivity(active) {
-      const value = active ? "true" : "false";
-      if (document.documentElement.dataset.codexThemeSessionActive !== value) {
-        document.documentElement.dataset.codexThemeSessionActive = value;
-      }
-    }
-    function evaluateActivity() {
-      if (disposed || !document.documentElement) return;
-      diagnostics.activityChecks += 1;
-      const nextComposerSurface = findComposerSurface();
-      if (nextComposerSurface !== composerSurface) setComposerSurface(nextComposerSurface);
-      if (!(fireSurface instanceof HTMLElement) || !fireSurface.isConnected) {
-        setFireSurface(findMainSurface());
-      }
-      const now = performance.now();
-      const detectedComposerActive = composerIsActive(composerSurface);
-      if (detectedComposerActive) composerActiveUntil = now + RAINBOW_ACTIVE_GRACE_MS;
-      const currentComposerActive = detectedComposerActive || composerSurface instanceof HTMLElement && now < composerActiveUntil;
-      setComposerActive(currentComposerActive);
-      const activeThreadRows = activeSidebarSessionRows();
-      const activeProjectRows = activeCollapsedProjectRows();
-      retainActiveSessions(activeThreadRows, activeProjectRows);
-      const sidebarActive = activeThreadRows.length > 0;
-      const collapsedProjectActive = activeProjectRows.length > 0;
-      const detectedUsageActive = currentComposerActive || sidebarActive || collapsedProjectActive;
-      if (detectedUsageActive) usageActivityActiveUntil = now + USAGE_ACTIVITY_GRACE_MS;
-      const usageActive = detectedUsageActive || now < usageActivityActiveUntil;
-      setUsageActivity(usageActive);
-      const identity = currentSessionIdentity();
-      const currentIdentityIsActive = activeThreadRows.some((row) => identity.key === `thread:${row.dataset.appActionSidebarThreadId}`) || activeProjectRows.some((row) => identity.key === `project:${row.dataset.appActionSidebarProjectId}`);
-      setFireActive(currentComposerActive || currentIdentityIsActive, identity);
-      activityState = {
-        currentComposerActive,
-        sidebarActive,
-        sidebarActiveCount: activeThreadRows.length,
-        sidebarThreadIds: activeThreadRows.map((row) => row.dataset.appActionSidebarThreadId || null).filter(Boolean),
-        collapsedProjectActive,
-        collapsedProjectActiveCount: activeProjectRows.length,
-        collapsedProjectIds: activeProjectRows.map((row) => row.dataset.appActionSidebarProjectId || null).filter(Boolean),
-        active: usageActive
-      };
-    }
-    function reconcileStructure() {
-      if (disposed || !document.documentElement) return;
-      diagnostics.structureReconciles += 1;
-      ensureStyle();
-      renderUsagePanel();
-      reconcileUnifiedSidebarMode();
-      reconcileChatWorkToggleFallback();
-      scheduleChatWorkToggleRender();
-      renderServerLatencies();
-      const nextComposerSurface = findComposerSurface();
-      if (nextComposerSurface !== composerSurface) setComposerSurface(nextComposerSurface);
-      const nextFireSurface = findMainSurface();
-      if (nextFireSurface !== fireSurface) setFireSurface(nextFireSurface);
-      scheduleChatTurnDiffRender();
-      scheduleActivity("structure");
-    }
-    function scheduleStructure() {
-      if (disposed || structureFrame) return;
-      structureFrame = requestAnimationFrame(() => {
-        structureFrame = 0;
-        reconcileStructure();
-      });
-    }
-    function scheduleActivity() {
-      if (disposed || activityFrame) return;
-      activityFrame = requestAnimationFrame(() => {
-        activityFrame = 0;
-        evaluateActivity();
-      });
-    }
-    function changedNodesAreOwned(record) {
-      const changed = [...record.addedNodes, ...record.removedNodes];
-      return changed.length > 0 && changed.every(isOwnedNode);
-    }
-    function nodeTouchesRelevantStructure(node) {
-      const element = node instanceof Element ? node : node?.parentElement;
-      if (!(element instanceof Element) || isOwnedNode(element)) return false;
-      return element.matches(RELEVANT_STRUCTURE_SELECTOR) || element.querySelector(RELEVANT_STRUCTURE_SELECTOR) != null;
-    }
-    function classifyMutation(record) {
-      if (isOwnedNode(record.target)) return { structure: false, activity: false };
-      const target = record.target instanceof Element ? record.target : record.target?.parentElement;
-      if (record.type === "attributes") {
-        if (!(target instanceof Element)) return { structure: false, activity: false };
-        const inSidebar = target.closest(".app-shell-left-panel") != null;
-        const inComposer = composerSurface instanceof HTMLElement && composerSurface.contains(target);
-        return { structure: false, activity: inSidebar || inComposer };
-      }
-      if (record.type !== "childList" || changedNodesAreOwned(record)) {
-        return { structure: false, activity: false };
-      }
-      if (target instanceof Element && target.closest(".app-shell-left-panel")) {
-        return { structure: true, activity: true };
-      }
-      if (target instanceof Element && composerSurface instanceof HTMLElement && (composerSurface.contains(target) || target.contains(composerSurface))) {
-        const changed2 = [...record.addedNodes, ...record.removedNodes];
-        const structure2 = changed2.some((node) => node instanceof Element && nodeTouchesRelevantStructure(node));
-        return { structure: structure2, activity: true };
-      }
-      const changed = [...record.addedNodes, ...record.removedNodes];
-      const structure = changed.some(nodeTouchesRelevantStructure);
-      return { structure, activity: structure };
-    }
-    function installObserver() {
-      observer?.disconnect();
-      observer = new MutationObserver((records) => {
-        diagnostics.observerCallbacks += 1;
-        let structure = false;
-        let activity = false;
-        for (const record of records) {
-          const classification = classifyMutation(record);
-          structure ||= classification.structure;
-          activity ||= classification.activity;
-          if (structure && activity) break;
-        }
-        if (!structure && !activity) diagnostics.ignoredObserverCallbacks += 1;
-        if (structure) {
-          reconcileChatWorkToggleFallback();
-          scheduleStructure("mutation");
-        }
-        if (activity) scheduleActivity("mutation");
-      });
-      observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ["aria-busy", "aria-label", "data-state", "data-status", "data-testid"]
-      });
-    }
-    function applyConfig(nextConfig) {
-      if (nextConfig && typeof nextConfig === "object") config = { ...config, ...nextConfig };
-      ensureStyle();
-      updateFireAsset();
-    }
-    function install(nextConfig) {
-      diagnostics.evaluations += 1;
-      if (disposed) return { installed: false, disposed: true };
-      applyConfig(nextConfig);
-      if (document.documentElement) {
-        document.documentElement.dataset.codexThemeWallpaper = "enabled";
-      }
-      if (!installed) {
-        installed = true;
-        diagnostics.installs += 1;
-        installChatWorkToggleClickBridge();
-        if (document.documentElement) installObserver();
-        activityTimer = setInterval(scheduleActivity, ACTIVITY_REFRESH_MS);
-        if (config.usageManagedByHost !== true) {
-          usageTimer = setInterval(refreshUsage, USAGE_REFRESH_MS);
-        }
-        chatTurnDiffTimer = setInterval(
-          scheduleChatTurnDiffRender,
-          CHAT_TURN_DIFF_REFRESH_MS
-        );
-        if (document.readyState === "loading") {
-          domReadyHandler = () => {
-            if (document.documentElement) {
-              document.documentElement.dataset.codexThemeWallpaper = "enabled";
-              if (!observer) installObserver();
-            }
-            refresh("dom-ready");
-          };
-          document.addEventListener("DOMContentLoaded", domReadyHandler, { once: true });
-        }
-        if (config.usageManagedByHost !== true) void refreshUsage();
-      }
-      refresh("install");
-      return {
-        installed: true,
-        imageBytes: Number(config.imageBytes) || 0,
-        title: document.title,
-        url: location.href,
-        runtime: inspect()
-      };
-    }
-    function updateState(nextState) {
-      if (disposed || nextState == null || typeof nextState !== "object") return false;
-      let changed = false;
-      if (Object.prototype.hasOwnProperty.call(nextState, "usage") && nextState.usage != null && !usageEqual(uiState.usage, nextState.usage)) {
-        uiState.usage = nextState.usage;
-        uiState.usageError = null;
-        try {
-          localStorage.setItem(USAGE_CACHE_KEY, JSON.stringify(nextState.usage));
-        } catch {
-        }
-        changed = true;
-      }
-      if (Object.prototype.hasOwnProperty.call(nextState, "latencies") && !shallowEqualObject(uiState.latencies, nextState.latencies || {})) {
-        uiState.latencies = { ...nextState.latencies || {} };
-        changed = true;
-      }
-      if (changed) {
-        diagnostics.stateUpdates += 1;
-        scheduleStructure("state");
-      }
-      return changed;
-    }
-    function refresh() {
-      if (disposed) return false;
-      diagnostics.refreshes += 1;
-      scheduleStructure("refresh");
-      scheduleActivity("refresh");
-      return true;
-    }
-    function inspect() {
-      const fill = document.querySelector(
-        `#${USAGE_PANEL_ID} .codex-theme-usage-fill`
-      );
-      const canvas = composerCanvas;
-      return {
-        version: runtime2.version,
-        installed,
-        disposed,
-        diagnostics: { ...diagnostics },
-        resources: {
-          observer: observer != null,
-          activityTimer: activityTimer !== 0,
-          usageTimer: usageTimer !== 0,
-          chatTurnDiffTimer: chatTurnDiffTimer !== 0,
-          composerAnimationFrame: composerAnimationFrame !== 0,
-          fireTimer: fireTimer !== 0
-        },
-        nodes: {
-          usagePanels: document.querySelectorAll(`#${USAGE_PANEL_ID}`).length,
-          composerCanvases: document.querySelectorAll(".codex-theme-rainbow-canvas").length,
-          fireLayers: document.querySelectorAll(".codex-theme-thumb-fire-layer").length,
-          fireImages: document.querySelectorAll(".codex-theme-thumb-fire").length,
-          serverSignals: document.querySelectorAll(".codex-theme-server-signal").length,
-          chatTurnDiffCards: document.querySelectorAll(
-            '[data-codex-theme-native-turn-diff="true"]'
-          ).length,
-          nativeTurnDiffCards: nativeTurnDiffRoots.size,
-          chatWorkToggles: document.querySelectorAll(
-            ".codex-theme-native-chat-work-toggle"
-          ).length
-        },
-        nativeTurnDiff: {
-          loaded: nativeTurnDiffRuntime != null,
-          loading: nativeTurnDiffRuntimePromise != null && nativeTurnDiffRuntime == null,
-          lastError: nativeTurnDiffLastError
-        },
-        unifiedSidebar: {
-          active: unifiedSidebarActive,
-          trackedFiberCount: unifiedSidebarFibers.size,
-          lastError: unifiedSidebarLastError
-        },
-        chatWorkToggle: {
-          loaded: chatWorkToggleRuntime != null,
-          loading: chatWorkToggleRuntimePromise != null && chatWorkToggleRuntime == null,
-          mounted: document.querySelector(
-            ".codex-theme-native-chat-work-toggle"
-          )?.isConnected === true,
-          nativeMounted: nativeChatWorkToggleNode()?.isConnected === true,
-          fallbackMounted: chatWorkToggleFallback?.isConnected === true,
-          trackedFiberCount: chatWorkToggleFibers.size,
-          mode: chatWorkToggleMode,
-          lastError: chatWorkToggleLastError
-        },
-        usage: {
-          value: uiState.usage,
-          clipRight: fill instanceof HTMLElement ? fill.style.getPropertyValue("--codex-theme-usage-clip-right") : null,
-          layoutWidth: fill instanceof HTMLElement ? fill.style.width : null
-        },
-        activity: activityState,
-        composer: {
-          attached: composerSurface instanceof HTMLElement && composerSurface.isConnected,
-          active: composerActive,
-          ready: canvas?.dataset.ready === "true",
-          segmentCount: Number(canvas?.dataset.segmentCount) || 0
-        },
-        fire: {
-          attached: fireLayer instanceof HTMLElement && fireLayer.isConnected,
-          active: fireActive,
-          sessionKey: fireCurrentSessionKey,
-          elapsedMs: fireActiveStartedAt > 0 ? Math.max(0, Date.now() - fireActiveStartedAt) : 0,
-          retainedSessionCount: Object.keys(sessionStarts).length
-        }
-      };
-    }
-    function dispose({ preserveStyle = false } = {}) {
-      if (disposed) {
-        return {
-          usage: uiState.usage,
-          latencies: uiState.latencies,
-          sessionStarts,
-          chatWorkToggleMode
-        };
-      }
-      disposed = true;
-      observer?.disconnect();
-      observer = null;
-      if (activityTimer) clearInterval(activityTimer);
-      if (usageTimer) clearInterval(usageTimer);
-      if (chatTurnDiffTimer) clearInterval(chatTurnDiffTimer);
-      activityTimer = 0;
-      usageTimer = 0;
-      chatTurnDiffTimer = 0;
-      if (structureFrame) cancelAnimationFrame(structureFrame);
-      if (activityFrame) cancelAnimationFrame(activityFrame);
-      if (fireGeometryFrame) cancelAnimationFrame(fireGeometryFrame);
-      structureFrame = 0;
-      activityFrame = 0;
-      fireGeometryFrame = 0;
-      stopComposerAnimation();
-      stopFireTimer();
-      composerResizeObserver?.disconnect();
-      fireResizeObserver?.disconnect();
-      composerResizeObserver = null;
-      fireResizeObserver = null;
-      if (domReadyHandler) document.removeEventListener("DOMContentLoaded", domReadyHandler);
-      domReadyHandler = null;
-      if (chatWorkToggleClickHandler != null) {
-        document.removeEventListener("click", chatWorkToggleClickHandler, true);
-        chatWorkToggleClickHandler = null;
-      }
-      for (const [key, record] of nativeTurnDiffRoots) {
-        removeNativeTurnDiffRoot(key, record);
-      }
-      restoreNativeChatWorkHomeFibers();
-      chatWorkToggleHomeActive = false;
-      removeChatWorkToggleFallback();
-      chatWorkToggleTemplate = null;
-      chatWorkToggleRect = null;
-      restoreNativeHomeRouteModeSnapshots();
-      restoreUnifiedSidebarMode();
-      nativeTurnDiffRuntime = null;
-      nativeTurnDiffRuntimePromise = null;
-      nativeTurnDiffRenderInFlight = false;
-      nativeTurnDiffRenderRequested = false;
-      chatWorkToggleRuntime = null;
-      chatWorkToggleRuntimePromise = null;
-      chatWorkToggleRenderInFlight = false;
-      chatWorkToggleRenderRequested = false;
-      if (composerSurface instanceof HTMLElement) {
-        removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-composer");
-        removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-active");
-      }
-      composerCanvas?.remove();
-      fireLayer?.remove();
-      if (fireSurface instanceof HTMLElement) {
-        removeAttributeIfPresent(fireSurface, "data-codex-theme-wallpaper-root");
-      }
-      document.getElementById(USAGE_PANEL_ID)?.remove();
-      for (const card of document.querySelectorAll(".codex-theme-chat-turn-diff")) card.remove();
-      for (const container of document.querySelectorAll(
-        '[data-codex-theme-native-turn-diff="true"]'
-      )) {
-        container.remove();
-      }
-      for (const signal of document.querySelectorAll(".codex-theme-server-signal")) signal.remove();
-      for (const nativeStatus of document.querySelectorAll(
-        '[data-codex-theme-native-server-status="true"]'
-      )) {
-        removeAttributeIfPresent(nativeStatus, "data-codex-theme-native-server-status");
-      }
-      removeAttributeIfPresent(document.documentElement, "data-codex-theme-session-active");
-      if (!preserveStyle) {
-        document.getElementById(STYLE_ID)?.remove();
-        removeAttributeIfPresent(document.documentElement, "data-codex-theme-wallpaper");
-      }
-      if (globalThis[RUNTIME_KEY] === runtime2) delete globalThis[RUNTIME_KEY];
-      return {
-        usage: uiState.usage,
-        latencies: uiState.latencies,
-        sessionStarts,
-        chatWorkToggleMode
-      };
-    }
-  }
+// embedded-page-runtime:page-runtime
+function getPageRuntimeBundle() {
+  return 'var __codexThemePage = (() => {\n  var __defProp = Object.defineProperty;\n  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;\n  var __getOwnPropNames = Object.getOwnPropertyNames;\n  var __hasOwnProp = Object.prototype.hasOwnProperty;\n  var __export = (target, all) => {\n    for (var name in all)\n      __defProp(target, name, { get: all[name], enumerable: true });\n  };\n  var __copyProps = (to, from, except, desc) => {\n    if (from && typeof from === "object" || typeof from === "function") {\n      for (let key of __getOwnPropNames(from))\n        if (!__hasOwnProp.call(to, key) && key !== except)\n          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });\n    }\n    return to;\n  };\n  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);\n\n  // src/page/browser-entry.mjs\n  var browser_entry_exports = {};\n  __export(browser_entry_exports, {\n    installPageRuntime: () => installPageRuntime\n  });\n\n  // src/page/dom.mjs\n  var STYLE_ID = "codex-theme-style";\n  var OWNED_ATTRIBUTE = "data-codex-theme-owned";\n  function isVisible(element) {\n    if (!(element instanceof HTMLElement)) return false;\n    const rect = element.getBoundingClientRect();\n    return rect.width > 0 && rect.height > 0;\n  }\n  function isOwnedNode(node) {\n    const element = node instanceof Element ? node : node?.parentElement;\n    if (!(element instanceof Element)) return false;\n    return element.id === STYLE_ID || element.hasAttribute(OWNED_ATTRIBUTE) || element.closest(`[${OWNED_ATTRIBUTE}="true"]`) != null;\n  }\n  function markOwned(element) {\n    if (element.getAttribute(OWNED_ATTRIBUTE) !== "true") {\n      element.setAttribute(OWNED_ATTRIBUTE, "true");\n    }\n    return element;\n  }\n  function setAttributeIfChanged(element, name, value) {\n    if (element.getAttribute(name) !== value) element.setAttribute(name, value);\n  }\n  function removeAttributeIfPresent(element, name) {\n    if (element.hasAttribute(name)) element.removeAttribute(name);\n  }\n  function setStylePropertyIfChanged(element, name, value) {\n    if (element.style.getPropertyValue(name) !== value) element.style.setProperty(name, value);\n  }\n  function shallowEqualObject(left, right) {\n    if (left === right) return true;\n    const leftKeys = Object.keys(left || {});\n    const rightKeys = Object.keys(right || {});\n    if (leftKeys.length !== rightKeys.length) return false;\n    return leftKeys.every((key) => Object.prototype.hasOwnProperty.call(right, key) && Object.is(left[key], right[key]));\n  }\n  function findMainSurface() {\n    const visibleSurfaces = (selector) => Array.from(document.querySelectorAll(selector)).filter((surface) => surface instanceof HTMLElement && isVisible(surface));\n    const currentSurfaces = visibleSurfaces("[data-app-shell-main-surface]");\n    const candidates = currentSurfaces.length > 0 ? currentSurfaces : visibleSurfaces(\'[class*="_MainContentSurface_"]\');\n    return candidates.sort((left, right) => {\n      const leftRect = left.getBoundingClientRect();\n      const rightRect = right.getBoundingClientRect();\n      return rightRect.width * rightRect.height - leftRect.width * leftRect.height;\n    })[0] ?? null;\n  }\n\n  // src/page/home-mode.mjs\n  function createHomeModeSupport() {\n    const identifier = "[A-Za-z_$][\\\\w$]*";\n    const escape = (text) => text.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");\n    function exportName(source, name) {\n      const block = source.slice(source.lastIndexOf("export{"));\n      const match = block.match(new RegExp(`(?:\\\\{|,)${escape(name)} as (${identifier})(?=,|})`));\n      if (!match) throw new Error(`Unsupported app build: ${name} is not exported`);\n      return match[1];\n    }\n    function bindingReference(source, name) {\n      for (const clause of source.matchAll(/import\\{([^}]+)\\}from["\'](\\.\\/[^"\']+\\.js)["\'];/g)) {\n        for (const binding of clause[1].split(",")) {\n          const [exported, local = exported] = binding.trim().split(/\\s+as\\s+/);\n          if (local === name) return { name: exported, path: clause[2] };\n        }\n      }\n      return exportName(source, name);\n    }\n    function importedReactDom(source) {\n      const factories = /* @__PURE__ */ new Set();\n      for (const call of source.matchAll(new RegExp(`(${identifier})\\\\.flushSync(?:\\\\(|\\\\)\\\\()`, "g"))) {\n        const assignment = source.match(new RegExp(\n          `(?:^|[^\\\\w$])${escape(call[1])}=(?:${identifier}\\\\()?(${identifier})\\\\(\\\\)(?:,1)?\\\\)?(?=[,;)\\\\n]|$)`\n        ));\n        if (assignment) factories.add(assignment[1]);\n      }\n      const candidates = /* @__PURE__ */ new Map();\n      for (const clause of source.matchAll(/import\\{([^}]+)\\}from["\'](\\.\\/[^"\']+\\.js)["\'];/g)) {\n        for (const binding of clause[1].split(",")) {\n          const [name, local = name] = binding.trim().split(/\\s+as\\s+/);\n          if (factories.has(local)) candidates.set(`${clause[2]}:${name}`, { name, path: clause[2] });\n        }\n      }\n      return candidates.size === 1 ? [...candidates.values()][0] : null;\n    }\n    function discover(source) {\n      const legacySetter = source.match(new RegExp(\n        `function\\\\s+(${identifier})\\\\(e,t\\\\)\\\\{t===([\\`\'"])chat\\\\2&&e\\\\.get\\\\((${identifier})\\\\)\\\\|\\\\|e\\\\.set\\\\((${identifier}),t\\\\)\\\\}`\n      ));\n      const scopedSetter = source.match(new RegExp(\n        `function\\\\s+(${identifier})\\\\(e,t\\\\)\\\\{t===([\\`\'"])chat\\\\2&&e\\\\.get\\\\((${identifier})\\\\)\\\\|\\\\|\\\\(e\\\\.get\\\\((${identifier})\\\\)!=null&&e\\\\.set\\\\(\\\\4,t\\\\),e\\\\.set\\\\((${identifier}),t\\\\)\\\\)\\\\}`\n      ));\n      const setter = legacySetter ?? scopedSetter;\n      if (!setter) throw new Error("Unsupported app build: Home mode setter was not found");\n      const persisted = source.match(new RegExp(\n        `(${identifier})=${identifier}\\\\(${identifier},\\\\(\\\\{get:(${identifier})\\\\}\\\\)=>\\\\2\\\\(${escape(legacySetter ? setter[4] : setter[5])}\\\\)\\\\?\\\\?`\n      ));\n      let preference = persisted;\n      if (!legacySetter && persisted) {\n        const override = source.match(new RegExp(\n          `(${identifier})=${identifier}\\\\(${identifier},\\\\(\\\\{get:(${identifier})\\\\}\\\\)=>\\\\2\\\\(${escape(setter[4])}\\\\)\\\\)`\n        ));\n        preference = override && source.match(new RegExp(\n          `(${identifier})=${identifier}\\\\(${identifier},\\\\(\\\\{get:(${identifier})\\\\}\\\\)=>\\\\2\\\\(${escape(override[1])}\\\\)\\\\?\\\\?\\\\2\\\\(${escape(persisted[1])}\\\\)\\\\?\\\\?`\n        ));\n      }\n      const effective = [...source.matchAll(new RegExp(\n        `(?<name>${identifier})=${identifier}\\\\(${identifier},\\\\(\\\\{get:(?<get>${identifier})\\\\}\\\\)=>(?:\\\\{let ${identifier}=\\\\k<get>\\\\(${escape(preference?.[1] ?? "")}\\\\);return )?${identifier}\\\\(\\\\{chatGptProductAccess:\\\\k<get>\\\\((?<access>${identifier}),\\\\{name:[\\`\'"]chatgpt[\\`\'"]\\\\}\\\\),(?:chatSeatAccess:\\\\k<get>\\\\((?<seatAccess>${identifier}),\\\\{name:[\\`\'"]chatgpt\\\\.seat-access[\\`\'"]\\\\}\\\\),)?persistedMode:`,\n        "g"\n      ))];\n      const flushAt = source.indexOf(".flushSync=function");\n      const domFactory = flushAt < 0 ? null : source.slice(flushAt, flushAt + 6e3).match(\n        /\\}\\)\\),([A-Za-z_$][\\w$]*)=[A-Za-z_$][\\w$]*\\(\\(\\(/\n      );\n      const domImport = source.match(new RegExp(\n        `import\\\\{(${identifier}) as ${identifier}\\\\}from[\\`\'"](\\\\./react-dom-[\\\\w-]+\\\\.js)[\\`\'"];`\n      ));\n      const reactDomImport = domImport ? { name: domImport[1], path: domImport[2] } : !domFactory ? importedReactDom(source) : null;\n      if (!preference || !effective.length || !domFactory && !reactDomImport) {\n        throw new Error("Unsupported app build: Home mode subscriptions or ReactDOM were not found");\n      }\n      return {\n        setMode: exportName(source, setter[1]),\n        blocked: bindingReference(source, setter[3]),\n        preference: exportName(source, preference[1]),\n        effective: effective.map((match) => exportName(source, match.groups.name)),\n        access: bindingReference(source, effective[0].groups.access),\n        ...effective[0].groups.seatAccess ? { seatAccess: bindingReference(source, effective[0].groups.seatAccess) } : {},\n        ...domFactory ? { reactDom: exportName(source, domFactory[1]) } : {\n          reactDomImport\n        }\n      };\n    }\n    function load(source, namespace, reactDomModule, names = discover(source), modules = {}) {\n      const resolve = (reference) => typeof reference === "string" ? namespace[reference] : modules[reference?.path]?.[reference?.name];\n      const setMode = namespace[names.setMode];\n      const reactDom = names.reactDomImport ? reactDomModule?.[names.reactDomImport.name] : namespace[names.reactDom];\n      const flushSync = typeof reactDom === "function" ? reactDom()?.flushSync : null;\n      const descriptors = names.effective.map((name) => namespace[name]);\n      if (typeof setMode !== "function" || typeof flushSync !== "function" || [names.blocked, names.preference, names.access, names.seatAccess].filter(Boolean).some((name) => resolve(name) == null) || descriptors.some((value) => typeof value?.resolve !== "function")) {\n        throw new Error("Unsupported app build: Home mode runtime has an unexpected shape");\n      }\n      return {\n        names,\n        setMode,\n        flushSync,\n        readPreference: (store) => store.get(resolve(names.preference)),\n        canChat: (store) => !store.get(resolve(names.blocked)) && (store.get(resolve(names.access), { name: "chatgpt" })?.isCapable === true || names.seatAccess != null && store.get(resolve(names.seatAccess), { name: "chatgpt.seat-access" })?.isCapable === true),\n        subscriptionAtoms(store) {\n          return descriptors.map((descriptor) => {\n            const node = store.chain?.get(descriptor.scope.id);\n            if (!node) throw new Error("The Home mode scope was not found");\n            return descriptor.resolve(node, store.chain);\n          });\n        }\n      };\n    }\n    function createBridge(native, store) {\n      const records = /* @__PURE__ */ new Map();\n      const queues = /* @__PURE__ */ new Map();\n      const atomReads = /* @__PURE__ */ new Map();\n      let desired = null;\n      let disposed = false;\n      let previousPreference = null;\n      let writes = 0;\n      function selectedMode(value) {\n        if (disposed || desired == null || value == null) return value;\n        if (desired === "chat" && !native.canChat(store)) return value;\n        return desired;\n      }\n      function bind(route) {\n        if (disposed) throw new Error("The Home mode bridge has been disposed");\n        const atoms = new Set(native.subscriptionAtoms(store));\n        const activeSubscribers = /* @__PURE__ */ new Set();\n        const activeQueues = /* @__PURE__ */ new Set();\n        const activeAtoms = /* @__PURE__ */ new Set();\n        let matched = 0;\n        for (const fiber of new Set([route, route?.alternate].filter(Boolean))) {\n          const seen = /* @__PURE__ */ new Set();\n          for (let hook = fiber.memoizedState; hook && !seen.has(hook); hook = hook.next) {\n            seen.add(hook);\n            const memo = hook.memoizedState;\n            if (!Array.isArray(memo) || !atoms.has(memo[1]?.[1])) continue;\n            const subscriber = memo[0];\n            const snapshot = hook.next;\n            if (typeof subscriber?.getSnapshot !== "function" || typeof subscriber?.subscribe !== "function" || typeof snapshot?.queue?.getSnapshot !== "function") continue;\n            if (subscriber.createRender?.() != null) {\n              throw new Error("Unsupported app build: Home mode is not a primitive subscription");\n            }\n            const atom = memo[1][1];\n            if (typeof atom.read === "function") {\n              if (!atomReads.has(atom)) {\n                const original = atom.read;\n                const read = function(...args) {\n                  return selectedMode(original.apply(this, args));\n                };\n                atomReads.set(atom, { original, read });\n                atom.read = read;\n              }\n              activeAtoms.add(atom);\n            }\n            let record = records.get(subscriber);\n            if (!record) {\n              const original = subscriber.getSnapshot;\n              const read = () => selectedMode(original());\n              record = { original, read };\n              records.set(subscriber, record);\n              subscriber.getSnapshot = read;\n            }\n            if (!queues.has(snapshot.queue)) queues.set(snapshot.queue, {\n              original: snapshot.queue.getSnapshot,\n              read: record.read\n            });\n            snapshot.queue.getSnapshot = record.read;\n            activeSubscribers.add(subscriber);\n            activeQueues.add(snapshot.queue);\n            matched += 1;\n          }\n        }\n        if (!matched) throw new Error("The native Home mode subscription was not found");\n        for (const [subscriber, record] of records) {\n          if (activeSubscribers.has(subscriber)) continue;\n          if (subscriber.getSnapshot === record.read) subscriber.getSnapshot = record.original;\n          records.delete(subscriber);\n        }\n        for (const [queue, record] of queues) {\n          if (activeQueues.has(queue)) continue;\n          if (queue.getSnapshot === record.read) queue.getSnapshot = record.original;\n          queues.delete(queue);\n        }\n        for (const [atom, record] of atomReads) {\n          if (activeAtoms.has(atom)) continue;\n          if (atom.read === record.read) atom.read = record.original;\n          atomReads.delete(atom);\n        }\n        return matched;\n      }\n      function write(mode) {\n        native.setMode(store, mode);\n        writes += 1;\n      }\n      function writeAndInvalidate(mode) {\n        if (native.readPreference(store) === mode) write(mode === "chat" ? "work" : "chat");\n        write(mode);\n      }\n      function request(mode) {\n        if (disposed) throw new Error("The Home mode bridge has been disposed");\n        if (mode !== "chat" && mode !== "work") throw new Error("Invalid Home mode");\n        if (mode === "chat" && !native.canChat(store)) {\n          throw new Error("Chat is unavailable for the current account or workspace");\n        }\n        if (!records.size) throw new Error("The Home mode bridge is not connected");\n        previousPreference = native.readPreference(store);\n        const previousDesired = desired;\n        desired = mode;\n        try {\n          native.flushSync(() => {\n            writeAndInvalidate(mode);\n          });\n          if (native.readPreference(store) !== mode) throw new Error("The app rejected the requested Home mode");\n        } catch (error) {\n          desired = previousDesired;\n          try {\n            native.flushSync(() => writeAndInvalidate(previousPreference));\n          } catch {\n          }\n          throw error;\n        }\n      }\n      function cancel() {\n        desired = null;\n        if (previousPreference === "chat" || previousPreference === "work") {\n          native.flushSync(() => writeAndInvalidate(previousPreference));\n        }\n        previousPreference = null;\n      }\n      function dispose() {\n        if (disposed) return;\n        disposed = true;\n        for (const [subscriber, record] of records) {\n          if (subscriber.getSnapshot === record.read) subscriber.getSnapshot = record.original;\n        }\n        for (const [queue, record] of queues) {\n          if (queue.getSnapshot === record.read) queue.getSnapshot = record.original;\n        }\n        for (const [atom, record] of atomReads) {\n          if (atom.read === record.read) atom.read = record.original;\n        }\n        records.clear();\n        queues.clear();\n        atomReads.clear();\n      }\n      return { bind, request, cancel, dispose, inspect: () => ({ desired, writes, subscriptions: records.size }) };\n    }\n    return { discover, load, createBridge };\n  }\n\n  // src/page/chat-composer.mjs\n  function createChatComposerSupport() {\n    const changes = /* @__PURE__ */ new Map();\n    function isRecoverable(props) {\n      return props?.showComposer === false && props.hasRenderableTurns === true && props.hasLoadError === false && props.isConversationLoading === false && props.isSubmitDisabled === true && props.sharedConversationId == null && props.archivedPreviewFooter == null;\n    }\n    function repair(fiber) {\n      const props = fiber?.memoizedProps;\n      if (!isRecoverable(props)) return false;\n      let dispatch = null;\n      const seen = /* @__PURE__ */ new Set();\n      for (let hook = fiber.memoizedState; hook && !seen.has(hook); hook = hook.next) {\n        seen.add(hook);\n        const state = hook.memoizedState;\n        if (state != null && Object.getPrototypeOf(state) === Object.prototype && typeof state.getHeightPx === "function" && typeof state.place === "function" && typeof state.clear === "function" && typeof hook.queue?.dispatch === "function") {\n          dispatch = hook.queue.dispatch;\n          break;\n        }\n      }\n      if (dispatch == null) return false;\n      const patched = { ...props, showComposer: true };\n      for (const current of [fiber, fiber.alternate].filter(Boolean)) {\n        if (current.memoizedProps !== props) continue;\n        changes.set(current, { original: props, patched, pending: current.pendingProps });\n        current.memoizedProps = patched;\n        current.pendingProps = patched;\n      }\n      dispatch((state) => state != null && typeof state.getHeightPx === "function" ? { ...state } : state);\n      return true;\n    }\n    function retain(fibers) {\n      for (const fiber of changes.keys()) if (!fibers.has(fiber)) changes.delete(fiber);\n    }\n    function dispose() {\n      for (const [fiber, change] of changes) {\n        if (fiber.memoizedProps === change.patched) fiber.memoizedProps = change.original;\n        if (fiber.pendingProps === change.patched) fiber.pendingProps = change.pending;\n      }\n      changes.clear();\n    }\n    return { isRecoverable, repair, retain, dispose };\n  }\n\n  // src/page/queued-follow-ups.mjs\n  function createQueuedFollowUpSupport() {\n    const records = /* @__PURE__ */ new Map();\n    let recoveries = 0;\n    function attach(queue) {\n      if (records.has(queue)) return true;\n      if (!["read", "enqueue", "remove", "restore", "isEnabled"].every(\n        (key) => typeof queue?.[key] === "function"\n      )) return false;\n      const source = Function.prototype.toString.call(queue.enqueue);\n      if (!source.includes("App-server queued follow-up no longer exists") || !source.includes("thread/queue/add") || !source.includes("thread/queue/update")) return false;\n      if (["enqueue", "remove", "restore"].some(\n        (key) => Object.getOwnPropertyDescriptor(queue, key)?.writable !== true\n      )) return false;\n      const original = { enqueue: queue.enqueue, remove: queue.remove, restore: queue.restore };\n      const removed = /* @__PURE__ */ new Map();\n      const keyFor = (threadId, messageId) => JSON.stringify([threadId, messageId]);\n      const record = { queue, original, removed, active: true };\n      const remove = async function(threadId, messageId, ...rest) {\n        const result = await original.remove.call(this, threadId, messageId, ...rest);\n        if (record.active && result?.message?.id === messageId && result.serverSubmission?.id === messageId) {\n          removed.set(keyFor(threadId, messageId), { pending: false });\n          while (removed.size > 256) removed.delete(removed.keys().next().value);\n        }\n        return result;\n      };\n      const restore = async function(threadId, snapshot, ...rest) {\n        const key = keyFor(threadId, snapshot?.message?.id);\n        removed.delete(key);\n        return original.restore.call(this, threadId, snapshot, ...rest);\n      };\n      const enqueue = async function(threadId, message, position, ...rest) {\n        const key = keyFor(threadId, position?.messageId);\n        const proof = removed.get(key);\n        const items = proof == null ? null : queue.read(threadId);\n        if (!record.active || proof == null || !queue.isEnabled() || !Array.isArray(items) || items.some((item) => item.id === position.messageId)) {\n          return original.enqueue.call(this, threadId, message, position, ...rest);\n        }\n        if (proof.pending) throw new Error("This edited queued message is already being submitted");\n        proof.pending = true;\n        const { messageId: _removedId, ...insertionPosition } = position;\n        try {\n          const result = await original.enqueue.call(this, threadId, message, insertionPosition, ...rest);\n          recoveries += 1;\n          return result;\n        } finally {\n          removed.delete(key);\n        }\n      };\n      record.wrapped = { enqueue, remove, restore };\n      Object.assign(queue, record.wrapped);\n      records.set(queue, record);\n      return true;\n    }\n    function dispose() {\n      for (const record of records.values()) {\n        record.active = false;\n        for (const key of Object.keys(record.original)) {\n          if (record.queue[key] === record.wrapped[key]) record.queue[key] = record.original[key];\n        }\n        record.removed.clear();\n      }\n      records.clear();\n    }\n    return { attach, dispose, inspect: () => ({ attachedQueues: records.size, recoveries }) };\n  }\n  function discoverQueueManagerExport(source) {\n    const identifier = "[A-Za-z_$][\\\\w$]*";\n    const match = source.match(new RegExp(\n      `function (${identifier})\\\\(e,t\\\\)\\\\{if\\\\(t==null\\\\)return null;let n=${identifier}\\\\(e\\\\.get,t\\\\);return\\\\(n==null\\\\?null:e\\\\.get\\\\(${identifier},n\\\\)\\\\)\\\\?\\\\?e\\\\.get\\\\(${identifier}\\\\)\\\\.find\\\\(e=>e\\\\.getConversation\\\\(t\\\\)!=null\\\\)\\\\?\\\\?null\\\\}`\n    ));\n    const exports = source.slice(source.lastIndexOf("export{"));\n    const name = match?.[1]?.replace(/[$]/g, "\\\\$");\n    const exported = name && exports.match(new RegExp(`(?:\\\\{|,)${name} as (${identifier})(?=,|})`));\n    if (!exported) throw new Error("Unsupported app build: queued-message manager lookup was not found");\n    return exported[1];\n  }\n\n  // src/page/native-compat.mjs\n  function createNativeCompatibility({ diagnostics }) {\n    let unifiedSidebarActive = false;\n    let unifiedSidebarLastError = null;\n    let composerLastError = null;\n    const nativeUnifiedSidebarTypes = /* @__PURE__ */ new WeakMap();\n    const unifiedSidebarFibers = /* @__PURE__ */ new Set();\n    const nativeCodexHomeTypes = /* @__PURE__ */ new WeakMap();\n    const nativeHomeRouteTypes = /* @__PURE__ */ new WeakMap();\n    const homeModeSupport = createHomeModeSupport();\n    const chatComposerSupport = createChatComposerSupport();\n    const queuedFollowUpSupport = createQueuedFollowUpSupport();\n    let queuedFollowUpLastError = null;\n    return {\n      reconcileSidebar() {\n        try {\n          reconcileUnifiedSidebarMode();\n        } catch (error) {\n          unifiedSidebarActive = false;\n          unifiedSidebarLastError = String(error?.stack || error);\n          diagnostics.unifiedSidebarRenderErrors += 1;\n        }\n      },\n      reconcileComposer() {\n        try {\n          reconcileChatComposer();\n          composerLastError = null;\n        } catch (error) {\n          composerLastError = String(error?.stack || error);\n          diagnostics.chatComposerRecoveryErrors = (diagnostics.chatComposerRecoveryErrors ?? 0) + 1;\n        }\n      },\n      reconcileQueuedFollowUps(managerForThread) {\n        try {\n          reconcileQueuedFollowUps(managerForThread);\n          queuedFollowUpLastError = null;\n        } catch (error) {\n          queuedFollowUpLastError = String(error?.message || error);\n        }\n      },\n      inspectQueuedFollowUps: () => ({ ...queuedFollowUpSupport.inspect(), lastError: queuedFollowUpLastError }),\n      findHome: nativeCodexHomeFiber,\n      homeStore: homeComposerStoreForFiber,\n      homeMode: (home) => fiberProps(home)?.homeComposerMode === "chat" ? "chat" : "work",\n      discoverHomeRuntime: homeModeSupport.discover,\n      loadHomeRuntime: homeModeSupport.load,\n      createHomeBridge: homeModeSupport.createBridge,\n      bindHomeBridge: (bridge, home) => bridge.bind(nativeHomeRouteFiber(home)),\n      inspectSidebar: () => ({\n        active: unifiedSidebarActive,\n        trackedFiberCount: unifiedSidebarFibers.size,\n        lastError: unifiedSidebarLastError\n      }),\n      inspectComposer: () => ({ lastError: composerLastError }),\n      dispose() {\n        queuedFollowUpSupport.dispose();\n        try {\n          chatComposerSupport.dispose();\n        } finally {\n          restoreUnifiedSidebarMode();\n        }\n      }\n    };\n    function rootProductMode(root) {\n      const stack = [root];\n      const visited = /* @__PURE__ */ new Set();\n      const modes = /* @__PURE__ */ new Set();\n      while (stack.length && visited.size < 1e5) {\n        const fiber = stack.pop();\n        if (fiber == null || visited.has(fiber)) continue;\n        visited.add(fiber);\n        const mode = fiberProps(fiber)?.sidebarMode;\n        if (fiber.sibling) stack.push(fiber.sibling);\n        if (mode === "codex" || mode === "chatgpt") modes.add(mode);\n        else if (fiber.child) stack.push(fiber.child);\n      }\n      return modes.size === 1 ? [...modes][0] : null;\n    }\n    function reactFiberForElement(element) {\n      if (!(element instanceof Element)) return null;\n      for (const key of Object.getOwnPropertyNames(element)) {\n        if (key.startsWith("__reactFiber$")) return element[key] ?? null;\n        if (key.startsWith("__reactContainer$")) {\n          return element[key]?.current ?? element[key] ?? null;\n        }\n      }\n      return null;\n    }\n    function currentReactFiberRoot() {\n      const candidates = [\n        ...document.querySelectorAll(\n          \'[data-app-shell-main-surface], [class*="_MainContentSurface_"]\'\n        ),\n        document.body\n      ];\n      for (const candidate of candidates) {\n        let fiber = reactFiberForElement(candidate);\n        if (fiber == null) continue;\n        while (fiber.return != null) fiber = fiber.return;\n        return fiber.stateNode?.current ?? fiber.current ?? fiber;\n      }\n      return null;\n    }\n    function fiberProps(fiber) {\n      const props = fiber?.memoizedProps ?? fiber?.pendingProps;\n      return props != null && typeof props === "object" ? props : null;\n    }\n    function reconcileQueuedFollowUps(managerForThread) {\n      const root = currentReactFiberRoot();\n      if (root == null) return;\n      const scopes = /* @__PURE__ */ new Set();\n      const threadIds = /* @__PURE__ */ new Set();\n      const activeRow = document.querySelector(\n        \'[data-app-action-sidebar-thread-active="true"][data-app-action-sidebar-thread-id],[data-app-action-sidebar-thread-id][aria-current="page"]\'\n      );\n      if (activeRow?.dataset.appActionSidebarThreadId) threadIds.add(activeRow.dataset.appActionSidebarThreadId);\n      const addScope = (value) => {\n        if (value != null && typeof value.get === "function" && typeof value.set === "function" && value.scope != null) scopes.add(value);\n      };\n      const stack = [root];\n      const visited = /* @__PURE__ */ new Set();\n      while (stack.length && visited.size < 1e5) {\n        const fiber = stack.pop();\n        if (fiber == null || visited.has(fiber)) continue;\n        visited.add(fiber);\n        const followUp = fiberProps(fiber)?.followUp;\n        if (followUp?.type === "local" && typeof followUp.localConversationId === "string") {\n          threadIds.add(followUp.localConversationId);\n        }\n        const contexts = /* @__PURE__ */ new Set();\n        for (let context = fiber.dependencies?.firstContext; context && !contexts.has(context); context = context.next) {\n          contexts.add(context);\n          addScope(context.memoizedValue);\n        }\n        const hooks = /* @__PURE__ */ new Set();\n        for (let hook = fiber.memoizedState; hook && !hooks.has(hook); hook = hook.next) {\n          hooks.add(hook);\n          addScope(hook.memoizedState?.current);\n        }\n        if (fiber.sibling) stack.push(fiber.sibling);\n        if (fiber.child) stack.push(fiber.child);\n      }\n      for (const threadId of threadIds) {\n        for (const scope of scopes) {\n          let manager;\n          try {\n            manager = managerForThread(scope, threadId);\n          } catch {\n            continue;\n          }\n          if (manager?.getHostId?.() !== "local" || manager.getConversation?.(threadId) == null) continue;\n          const queue = manager.turnCoordinator?.serverQueue;\n          if (queue == null) continue;\n          if (!queuedFollowUpSupport.attach(queue)) {\n            throw new Error("Unsupported app build: server queue methods do not match");\n          }\n          break;\n        }\n      }\n    }\n    function reconcileChatComposer() {\n      const root = currentReactFiberRoot();\n      if (root == null) return;\n      const stack = [[root, null]];\n      const visited = /* @__PURE__ */ new Set();\n      const visibleViews = /* @__PURE__ */ new Set();\n      const retained = /* @__PURE__ */ new Set();\n      while (stack.length && visited.size < 1e5) {\n        const [fiber, parentView] = stack.pop();\n        if (fiber == null || visited.has(fiber)) continue;\n        visited.add(fiber);\n        const props = fiberProps(fiber);\n        const view = props != null && "composerConversationId" in props && "scrollStateConversationId" in props && "showComposer" in props && "hasRenderableTurns" in props ? fiber : parentView;\n        if (view != null) {\n          retained.add(view);\n          if (view.alternate) retained.add(view.alternate);\n          const node = fiber.stateNode;\n          if (node instanceof HTMLElement && node.hasAttribute("data-chatgpt-conversation-selection-target") && isVisible(node)) visibleViews.add(view);\n        }\n        if (fiber.sibling) stack.push([fiber.sibling, parentView]);\n        if (fiber.child) stack.push([fiber.child, view]);\n      }\n      chatComposerSupport.retain(retained);\n      for (const view of visibleViews) {\n        if (chatComposerSupport.repair(view)) diagnostics.chatComposerRecoveries += 1;\n      }\n    }\n    function isNativeUnifiedSidebarType(type) {\n      if (typeof type !== "function") return false;\n      if (nativeUnifiedSidebarTypes.has(type)) return nativeUnifiedSidebarTypes.get(type);\n      let matches = false;\n      try {\n        const source = Function.prototype.toString.call(type);\n        const projectSource = source.includes("includeChatGptProjects") || source.includes("chatGptSource") && source.includes("orderedPinnedProjectGroups") && source.includes("chatGptProjectTargets");\n        matches = source.includes("workCloudSidebarContentVisible") && source.includes("workLocalSidebarContentVisible") && projectSource && source.includes("sidebarElectron.chatGptWork.recents");\n      } catch {\n      }\n      nativeUnifiedSidebarTypes.set(type, matches);\n      return matches;\n    }\n    function nativeUnifiedSidebarFiber() {\n      const root = currentReactFiberRoot();\n      if (root == null) return null;\n      const stack = [root];\n      const visited = /* @__PURE__ */ new Set();\n      while (stack.length > 0 && visited.size < 1e5) {\n        const fiber = stack.pop();\n        if (fiber == null || visited.has(fiber)) continue;\n        visited.add(fiber);\n        if (isNativeUnifiedSidebarType(fiber.type ?? fiber.elementType)) return fiber;\n        if (fiber.sibling != null) stack.push(fiber.sibling);\n        if (fiber.child != null) stack.push(fiber.child);\n      }\n      return null;\n    }\n    function ancestorSidebarMode(fiber) {\n      for (let current = fiber?.return; current != null; current = current.return) {\n        const mode = fiberProps(current)?.sidebarMode;\n        if (mode === "codex" || mode === "chatgpt") return mode;\n      }\n      return null;\n    }\n    function trackUnifiedSidebarFiber(fiber) {\n      unifiedSidebarFibers.clear();\n      if (fiber != null) unifiedSidebarFibers.add(fiber);\n    }\n    function setFiberSidebarMode(fiber, mode) {\n      let changed = false;\n      const candidates = [fiber, fiber?.alternate].filter(Boolean);\n      for (const candidate of new Set(candidates)) {\n        for (const key of ["memoizedProps", "pendingProps"]) {\n          const props = candidate[key];\n          if (props == null || typeof props !== "object" || props.sidebarMode === mode) continue;\n          let updatedInPlace = false;\n          try {\n            props.sidebarMode = mode;\n            updatedInPlace = props.sidebarMode === mode;\n          } catch {\n          }\n          if (!updatedInPlace) candidate[key] = { ...props, sidebarMode: mode };\n          changed = true;\n        }\n      }\n      return changed;\n    }\n    function looksLikeBasicStateReducer(reducer) {\n      if (typeof reducer !== "function") return false;\n      try {\n        const source = Function.prototype.toString.call(reducer);\n        return source.includes("typeof") && source.includes("function") && source.includes("?") && source.includes(":");\n      } catch {\n        return false;\n      }\n    }\n    function requestFiberRender(fiber) {\n      let fallback = null;\n      for (const candidate of new Set([fiber, fiber?.alternate].filter(Boolean))) {\n        let hook = candidate.memoizedState;\n        const visitedHooks = /* @__PURE__ */ new Set();\n        while (hook != null && typeof hook === "object" && visitedHooks.size < 1e3) {\n          if (visitedHooks.has(hook)) break;\n          visitedHooks.add(hook);\n          const state = hook.memoizedState;\n          const queue = hook.queue;\n          if (state instanceof Map && typeof queue?.dispatch === "function") {\n            const record = { dispatch: queue.dispatch, state };\n            if (looksLikeBasicStateReducer(queue.lastRenderedReducer)) {\n              queue.dispatch(new Map(state));\n              return true;\n            }\n            fallback ??= record;\n          }\n          hook = hook.next;\n        }\n      }\n      if (fallback != null) {\n        fallback.dispatch(new Map(fallback.state));\n        return true;\n      }\n      return false;\n    }\n    function reconcileUnifiedSidebarMode() {\n      const fiber = nativeUnifiedSidebarFiber();\n      if (fiber == null) {\n        unifiedSidebarActive = false;\n        unifiedSidebarLastError = rootProductMode(currentReactFiberRoot()) === "codex" ? "The native unified sidebar component was not found" : null;\n        return;\n      }\n      const props = fiberProps(fiber);\n      const parentMode = ancestorSidebarMode(fiber);\n      if (props?.sidebarMode === "chatgpt") {\n        unifiedSidebarActive = parentMode === "codex";\n        if (unifiedSidebarActive) trackUnifiedSidebarFiber(fiber);\n        return;\n      }\n      if (props?.sidebarMode !== "codex") {\n        unifiedSidebarActive = false;\n        return;\n      }\n      try {\n        trackUnifiedSidebarFiber(fiber);\n        setFiberSidebarMode(fiber, "chatgpt");\n        diagnostics.unifiedSidebarPatches += 1;\n        if (requestFiberRender(fiber)) {\n          diagnostics.unifiedSidebarRenderRequests += 1;\n          unifiedSidebarLastError = null;\n        } else {\n          diagnostics.unifiedSidebarRenderErrors += 1;\n          unifiedSidebarLastError = "The native unified sidebar render queue was not found";\n        }\n        unifiedSidebarActive = true;\n      } catch (error) {\n        unifiedSidebarActive = false;\n        unifiedSidebarLastError = String(error?.stack || error);\n        diagnostics.unifiedSidebarRenderErrors += 1;\n      }\n    }\n    function restoreUnifiedSidebarMode() {\n      const liveFiber = nativeUnifiedSidebarFiber();\n      const candidates = new Set(unifiedSidebarFibers);\n      if (liveFiber != null) candidates.add(liveFiber);\n      for (const fiber of candidates) {\n        if (ancestorSidebarMode(fiber) !== "codex") continue;\n        if (fiberProps(fiber)?.sidebarMode !== "chatgpt") continue;\n        try {\n          setFiberSidebarMode(fiber, "codex");\n          requestFiberRender(fiber);\n          diagnostics.unifiedSidebarRestores += 1;\n        } catch {\n        }\n      }\n      unifiedSidebarFibers.clear();\n      unifiedSidebarActive = false;\n    }\n    function nativeCodexHomeTypePriority(type) {\n      if (typeof type !== "function") return 0;\n      if (nativeCodexHomeTypes.has(type)) {\n        return nativeCodexHomeTypes.get(type);\n      }\n      let priority = 0;\n      try {\n        const source = Function.prototype.toString.call(type);\n        const commonHomeProps = source.includes("homeComposerModeToggle") && source.includes("homeComposerController") && source.includes("showHomeUtilityBar");\n        if (commonHomeProps && source.includes("fileDropTarget") && source.includes("followUpSuggestionsPlacement")) {\n          priority = 2;\n        } else if (commonHomeProps && source.includes("home-main-content")) {\n          priority = 1;\n        }\n      } catch {\n      }\n      nativeCodexHomeTypes.set(type, priority);\n      return priority;\n    }\n    function nativeCodexHomeFiber() {\n      const root = currentReactFiberRoot();\n      if (root == null || rootProductMode(root) !== "codex") return null;\n      const stack = [root];\n      const visited = /* @__PURE__ */ new Set();\n      let fallback = null;\n      while (stack.length > 0 && visited.size < 1e5) {\n        const fiber = stack.pop();\n        if (fiber == null || visited.has(fiber)) continue;\n        visited.add(fiber);\n        const priority = nativeCodexHomeTypePriority(fiber.type ?? fiber.elementType);\n        if (priority >= 2) return fiber;\n        if (priority === 1) fallback ??= fiber;\n        if (fiber.sibling != null) stack.push(fiber.sibling);\n        if (fiber.child != null) stack.push(fiber.child);\n      }\n      return fallback;\n    }\n    function isNativeHomeRouteType(type) {\n      if (typeof type !== "function") return false;\n      if (nativeHomeRouteTypes.has(type)) return nativeHomeRouteTypes.get(type);\n      let matches = false;\n      try {\n        const source = Function.prototype.toString.call(type);\n        const modeControl = source.includes("HomeComposerMode") || source.includes("isModeToggleBlocked") && (source.includes("workModeRequiresUpgrade") || source.includes("workModeUpgradePlan")) && source.includes("onModeChange");\n        const composerInput = source.includes("composerPlainTextMode") || source.includes("getInitialContent") && source.includes("getInitialInput") && source.includes("onDocumentChange");\n        matches = modeControl && composerInput && source.includes("sharedSnapshotId") && source.includes("workOnlyModeEnabled") && source.includes("routeProjectId");\n      } catch {\n      }\n      nativeHomeRouteTypes.set(type, matches);\n      return matches;\n    }\n    function homeComposerStoreForFiber(homeFiber) {\n      function isComposerStore(value) {\n        return value != null && typeof value === "object" && typeof value.get === "function" && typeof value.set === "function" && value.scope != null;\n      }\n      const route = nativeHomeRouteFiber(homeFiber);\n      if (route == null) return null;\n      let fallback = null;\n      for (let current = route; current != null; current = current.return) {\n        const isHomeRoute = isNativeHomeRouteType(current.type ?? current.elementType);\n        for (const candidate of new Set([current, current.alternate].filter(Boolean))) {\n          let context = candidate.dependencies?.firstContext;\n          const visitedContexts = /* @__PURE__ */ new Set();\n          while (context != null && typeof context === "object" && visitedContexts.size < 1e3) {\n            if (visitedContexts.has(context)) break;\n            visitedContexts.add(context);\n            const value = context.memoizedValue;\n            if (isComposerStore(value)) {\n              if (value.value?.entrypoint === "home" && value.value?.kind === "new") {\n                return value;\n              }\n              if (isHomeRoute) fallback ??= value;\n            }\n            context = context.next;\n          }\n          let hook = candidate.memoizedState;\n          const visitedHooks = /* @__PURE__ */ new Set();\n          while (hook != null && typeof hook === "object" && visitedHooks.size < 1e3) {\n            if (visitedHooks.has(hook)) break;\n            visitedHooks.add(hook);\n            const value = hook.memoizedState?.current;\n            if (isComposerStore(value)) {\n              if (value.value?.entrypoint === "home" && value.value?.kind === "new") {\n                return value;\n              }\n              if (isHomeRoute) fallback ??= value;\n            }\n            hook = hook.next;\n          }\n        }\n        if (isHomeRoute) break;\n      }\n      return fallback;\n    }\n    function nativeHomeRouteFiber(homeFiber) {\n      for (let fiber = homeFiber; fiber != null; fiber = fiber.return) {\n        if (isNativeHomeRouteType(fiber.type ?? fiber.elementType)) return fiber;\n      }\n      return null;\n    }\n  }\n\n  // src/page/native-ui.mjs\n  function createNativeUiController({ diagnostics, scheduleStructure, timings, getMainSurface }) {\n    const CHAT_WORK_TRANSITION_GRACE_MS = Number(timings?.chatWorkTransitionGraceMs) || 600;\n    const compatibility = createNativeCompatibility({ diagnostics });\n    let disposed = false;\n    let chatWorkToggleRuntime = null;\n    let chatWorkToggleRuntimePromise = null;\n    let chatWorkToggleRenderInFlight = false;\n    let chatWorkToggleRenderRequested = false;\n    let chatWorkToggleLastError = null;\n    let chatWorkToggleStore = null;\n    let chatWorkModeBridge = null;\n    let chatWorkModePending = null;\n    let chatWorkModeDeadline = 0;\n    let chatWorkToggleClickHandler = null;\n    let chatWorkToggleTransitionMode = null;\n    let chatWorkToggleTransitionTimer = 0;\n    let chatWorkToggleHost = null;\n    let chatWorkToggleMode = null;\n    let queueManagerLookup = null;\n    let queueRuntimePromise = null;\n    let queueRuntimeLastError = null;\n    let queueInteractionHandler = null;\n    let runtimeAsset = null;\n    let chatWorkToggleRetryAfter = 0;\n    return {\n      install() {\n        if (disposed) return;\n        installChatWorkToggleClickBridge();\n        if (queueInteractionHandler == null) {\n          queueInteractionHandler = (event) => {\n            if (event.type === "keydown" && event.key !== "Enter" && event.key !== "ArrowUp") return;\n            reconcileQueuedFollowUps();\n          };\n          document.addEventListener("pointerdown", queueInteractionHandler, true);\n          document.addEventListener("keydown", queueInteractionHandler, true);\n        }\n      },\n      reconcile() {\n        if (disposed) return;\n        compatibility.reconcileSidebar();\n        scheduleChatWorkToggleRender();\n        reconcileQueuedFollowUps();\n      },\n      reconcileHome: scheduleChatWorkToggleRender,\n      reconcileComposer() {\n        if (!disposed) compatibility.reconcileComposer();\n      },\n      hasPendingMode: () => chatWorkModePending != null,\n      inspect,\n      dispose\n    };\n    function inspect() {\n      return {\n        unifiedSidebar: compatibility.inspectSidebar(),\n        chatComposer: compatibility.inspectComposer(),\n        queuedFollowUps: {\n          ...compatibility.inspectQueuedFollowUps(),\n          loaded: queueManagerLookup != null,\n          loadError: queueRuntimeLastError\n        },\n        chatWorkToggle: {\n          loaded: chatWorkToggleRuntime != null,\n          loading: chatWorkToggleRuntimePromise != null && chatWorkToggleRuntime == null && chatWorkToggleLastError == null,\n          mounted: document.querySelector(".codex-theme-native-chat-work-toggle")?.isConnected === true,\n          standaloneMounted: nativeChatWorkToggleNode()?.isConnected === true,\n          mode: chatWorkToggleMode,\n          pendingMode: chatWorkModePending,\n          bridge: chatWorkModeBridge?.inspect() ?? null,\n          nativeExports: chatWorkToggleRuntime?.names ?? null,\n          transitionMode: chatWorkToggleTransitionMode,\n          lastError: chatWorkToggleLastError\n        }\n      };\n    }\n    function dispose() {\n      if (disposed) return;\n      disposed = true;\n      if (queueInteractionHandler != null) {\n        document.removeEventListener("pointerdown", queueInteractionHandler, true);\n        document.removeEventListener("keydown", queueInteractionHandler, true);\n        queueInteractionHandler = null;\n      }\n      if (chatWorkToggleClickHandler != null) {\n        document.removeEventListener("click", chatWorkToggleClickHandler, true);\n        chatWorkToggleClickHandler = null;\n      }\n      finishChatWorkToggleTransition();\n      chatWorkModePending = null;\n      chatWorkModeBridge?.dispose();\n      chatWorkModeBridge = null;\n      chatWorkToggleStore = null;\n      removeChatWorkToggleHost();\n      compatibility.dispose();\n      chatWorkToggleRuntime = null;\n      chatWorkToggleRuntimePromise = null;\n      chatWorkToggleRenderInFlight = false;\n      chatWorkToggleRenderRequested = false;\n      queueManagerLookup = null;\n      runtimeAsset = null;\n    }\n    function reconcileQueuedFollowUps() {\n      if (disposed || /^\\/settings(?:\\/|$)/.test(location.pathname)) return;\n      if (queueManagerLookup != null) {\n        compatibility.reconcileQueuedFollowUps(queueManagerLookup);\n        return;\n      }\n      if (queueRuntimePromise != null || appInitialAssetUrl() == null) return;\n      queueRuntimePromise = chatWorkToggleRuntimeAsset().then(async ({ appInitialSource, appInitialUrl }) => {\n        const name = discoverQueueManagerExport(appInitialSource);\n        const module = await import(appInitialUrl);\n        if (typeof module[name] !== "function") throw new Error("The queued-message manager lookup is unavailable");\n        if (disposed) return;\n        queueManagerLookup = module[name];\n        compatibility.reconcileQueuedFollowUps(queueManagerLookup);\n      }).catch((error) => {\n        if (!disposed) queueRuntimeLastError = String(error?.message || error);\n      });\n    }\n    function resourceAssetUrl(pattern) {\n      try {\n        const entries = performance.getEntriesByType?.("resource") ?? [];\n        for (const entry of entries) {\n          if (typeof entry?.name === "string" && pattern.test(entry.name)) return entry.name;\n        }\n      } catch {\n      }\n      return null;\n    }\n    function linkedAssetUrl(pattern) {\n      try {\n        for (const link of document.querySelectorAll("link[href]")) {\n          const href = typeof link.href === "string" && link.href ? link.href : new URL(link.getAttribute("href"), document.baseURI).href;\n          if (pattern.test(href)) return href;\n        }\n      } catch {\n      }\n      return null;\n    }\n    function appInitialAssetUrl() {\n      const pattern = /\\/app-initial-[^/]+\\.js(?:[?#]|$)/;\n      return resourceAssetUrl(pattern) ?? linkedAssetUrl(pattern);\n    }\n    async function chatWorkToggleRuntimeAsset() {\n      const appInitialUrl = appInitialAssetUrl();\n      if (appInitialUrl == null) {\n        throw new Error("Codex app-initial asset was not found");\n      }\n      if (runtimeAsset?.url !== appInitialUrl) {\n        const record = { url: appInitialUrl, promise: null };\n        record.promise = fetch(appInitialUrl).then(async (response) => {\n          if (!response.ok) throw new Error(`Codex app asset request failed: ${response.status}`);\n          const appInitialSource = await response.text();\n          if (runtimeAsset === record) runtimeAsset = null;\n          return { appInitialSource, appInitialUrl };\n        }).catch((error) => {\n          if (runtimeAsset === record) runtimeAsset = null;\n          throw error;\n        });\n        runtimeAsset = record;\n      }\n      return runtimeAsset.promise;\n    }\n    async function loadChatWorkToggleRuntime() {\n      const testLoader = globalThis.__codexThemeChatWorkToggleLoader;\n      if (typeof testLoader === "function") {\n        const loaded = await testLoader();\n        if (["setMode", "readPreference", "canChat", "subscriptionAtoms", "flushSync"].some((key) => typeof loaded?.[key] !== "function")) {\n          throw new Error("The Chat/Work mode test loader returned an invalid runtime");\n        }\n        return loaded;\n      }\n      const { appInitialSource, appInitialUrl } = await chatWorkToggleRuntimeAsset();\n      const names = compatibility.discoverHomeRuntime(appInitialSource);\n      const paths = [...new Set(Object.values(names).flat().filter((reference) => typeof reference?.path === "string").map((reference) => reference.path))];\n      const [appInitialModule, importedModules] = await Promise.all([\n        import(appInitialUrl),\n        Promise.all(paths.map(async (path) => [path, await import(new URL(path, appInitialUrl).href)]))\n      ]);\n      const modules = Object.fromEntries(importedModules);\n      const reactDomModule = modules[names.reactDomImport?.path];\n      return {\n        ...compatibility.loadHomeRuntime(appInitialSource, appInitialModule, reactDomModule, names, modules),\n        appInitialUrl\n      };\n    }\n    async function ensureChatWorkToggleRuntime() {\n      if (chatWorkToggleRuntime != null) return chatWorkToggleRuntime;\n      if (Date.now() < chatWorkToggleRetryAfter) throw new Error(chatWorkToggleLastError);\n      if (chatWorkToggleRuntimePromise == null) {\n        chatWorkToggleRuntimePromise = loadChatWorkToggleRuntime().then((loaded) => {\n          if (disposed) return loaded;\n          chatWorkToggleRuntime = loaded;\n          chatWorkToggleLastError = null;\n          diagnostics.chatWorkToggleLoads += 1;\n          return loaded;\n        }).catch((error) => {\n          if (disposed) throw error;\n          chatWorkToggleLastError = String(error?.stack || error);\n          diagnostics.chatWorkToggleLoadErrors += 1;\n          if (!String(error?.message).startsWith("Unsupported app build:")) {\n            chatWorkToggleRuntimePromise = null;\n            chatWorkToggleRetryAfter = Date.now() + 5e3;\n          }\n          throw error;\n        });\n      }\n      return chatWorkToggleRuntimePromise;\n    }\n    function finishChatWorkToggleTransition() {\n      chatWorkToggleTransitionMode = null;\n      if (chatWorkToggleTransitionTimer) clearTimeout(chatWorkToggleTransitionTimer);\n      chatWorkToggleTransitionTimer = 0;\n      if (document.documentElement) {\n        removeAttributeIfPresent(\n          document.documentElement,\n          "data-codex-theme-chat-work-transition"\n        );\n      }\n    }\n    function beginChatWorkToggleTransition(mode) {\n      finishChatWorkToggleTransition();\n      chatWorkToggleTransitionMode = mode;\n      if (document.documentElement) {\n        setAttributeIfChanged(\n          document.documentElement,\n          "data-codex-theme-chat-work-transition",\n          mode\n        );\n      }\n      chatWorkToggleTransitionTimer = setTimeout(() => {\n        chatWorkToggleTransitionTimer = 0;\n        chatWorkToggleTransitionMode = null;\n        if (document.documentElement) {\n          removeAttributeIfPresent(\n            document.documentElement,\n            "data-codex-theme-chat-work-transition"\n          );\n        }\n        scheduleStructure("chat-work-transition-timeout");\n      }, CHAT_WORK_TRANSITION_GRACE_MS);\n    }\n    function requestChatWorkMode(mode) {\n      if (mode !== "chat" && mode !== "work") return false;\n      if (chatWorkModePending != null || mode === chatWorkToggleMode) return false;\n      const homeFiber = compatibility.findHome();\n      if (homeFiber == null || chatWorkToggleRuntime == null) {\n        chatWorkToggleLastError = "The live Codex Home component was not found";\n        diagnostics.chatWorkToggleModeSwitchErrors += 1;\n        return false;\n      }\n      const store = compatibility.homeStore(homeFiber) ?? chatWorkToggleStore;\n      if (store == null) {\n        chatWorkToggleLastError = "The live Codex Home composer store was not found";\n        diagnostics.chatWorkToggleModeSwitchErrors += 1;\n        return false;\n      }\n      try {\n        connectChatWorkMode(homeFiber, store);\n        beginChatWorkToggleTransition(mode);\n        chatWorkModePending = mode;\n        chatWorkModeDeadline = Date.now() + 2e3;\n        chatWorkToggleLastError = null;\n        updateChatWorkToggleElementMode(chatWorkToggleHost);\n        chatWorkModeBridge.request(mode);\n        scheduleStructure("chat-work-request");\n        return true;\n      } catch (error) {\n        chatWorkModePending = null;\n        finishChatWorkToggleTransition();\n        chatWorkToggleLastError = String(error?.stack || error);\n        diagnostics.chatWorkToggleModeSwitchErrors += 1;\n        updateChatWorkToggleElementMode(chatWorkToggleHost);\n        return false;\n      }\n    }\n    function connectChatWorkMode(homeFiber, store) {\n      if (chatWorkToggleStore !== store || chatWorkModeBridge == null) {\n        chatWorkModeBridge?.dispose();\n        chatWorkModeBridge = compatibility.createHomeBridge(chatWorkToggleRuntime, store);\n        chatWorkToggleStore = store;\n      }\n      compatibility.bindHomeBridge(chatWorkModeBridge, homeFiber);\n    }\n    function reconcileChatWorkMode(homeFiber) {\n      const actual = compatibility.homeMode(homeFiber);\n      if (chatWorkModePending === actual) {\n        diagnostics.chatWorkToggleModeSwitches += 1;\n        chatWorkModePending = null;\n        chatWorkToggleLastError = null;\n      }\n      chatWorkToggleMode = actual;\n    }\n    function nativeChatWorkToggleNode() {\n      return chatWorkToggleHost?.querySelector(".codex-theme-native-chat-work-toggle") ?? null;\n    }\n    function updateChatWorkToggleElementMode(element, mode = chatWorkToggleMode) {\n      if (!(element instanceof HTMLElement)) return;\n      const buttons = Array.from(element.querySelectorAll("button"));\n      for (let index = 0; index < buttons.length; index += 1) {\n        const buttonMode = index === 0 ? "chat" : index === 1 ? "work" : null;\n        if (buttonMode == null) continue;\n        const active = buttonMode === mode;\n        setAttributeIfChanged(buttons[index], "aria-pressed", String(active));\n        buttons[index].disabled = chatWorkModePending != null;\n        buttons[index].classList.toggle("text-default", active);\n        buttons[index].classList.toggle("text-mode-toggle-inactive", !active);\n        buttons[index].classList.toggle("hover:text-default", !active);\n        buttons[index].classList.toggle("focus-visible:text-default", !active);\n      }\n      setAttributeIfChanged(element, "aria-busy", String(chatWorkModePending != null));\n      if (chatWorkToggleLastError) setAttributeIfChanged(element, "title", chatWorkToggleLastError);\n      else removeAttributeIfPresent(element, "title");\n      const indicator = element.querySelector(".codex-theme-chat-work-indicator");\n      if (indicator instanceof HTMLElement) {\n        indicator.style.transition = "none";\n        indicator.style.transform = mode === "chat" ? "translateX(calc((0% - 0px) * var(--mode-toggle-direction)))" : "translateX(calc((100% - 17px) * var(--mode-toggle-direction)))";\n      }\n    }\n    function removeChatWorkToggleHost() {\n      if (chatWorkToggleHost instanceof HTMLElement) {\n        chatWorkToggleHost.remove();\n        diagnostics.chatWorkToggleRemoves += 1;\n      }\n      chatWorkToggleHost = null;\n    }\n    function createChatWorkToggleButton(mode, label) {\n      const button = document.createElement("button");\n      button.type = "button";\n      button.dataset.mode = mode;\n      button.className = "codex-theme-chat-work-button";\n      button.textContent = label;\n      return button;\n    }\n    function ensureChatWorkToggleHost() {\n      if (!(document.body instanceof HTMLElement)) return null;\n      if (!(chatWorkToggleHost instanceof HTMLElement) || !chatWorkToggleHost.isConnected) {\n        const host = markOwned(document.createElement("div"));\n        host.className = "codex-theme-chat-work-toggle-host";\n        host.setAttribute("data-codex-theme-chat-work-toggle-host", "true");\n        const toggle = document.createElement("div");\n        toggle.className = "codex-theme-native-chat-work-toggle";\n        toggle.setAttribute("role", "group");\n        toggle.setAttribute("aria-label", "Composer mode");\n        const track = document.createElement("span");\n        track.className = "codex-theme-chat-work-track";\n        track.setAttribute("aria-hidden", "true");\n        const indicator = document.createElement("span");\n        indicator.className = "codex-theme-chat-work-indicator";\n        indicator.setAttribute("aria-hidden", "true");\n        toggle.append(\n          track,\n          indicator,\n          createChatWorkToggleButton("chat", "Chat"),\n          createChatWorkToggleButton("work", "Work")\n        );\n        host.append(toggle);\n        document.body.append(host);\n        chatWorkToggleHost = host;\n        diagnostics.chatWorkToggleMounts += 1;\n      }\n      const surface = getMainSurface();\n      if (surface instanceof HTMLElement) {\n        const rect = surface.getBoundingClientRect();\n        setStylePropertyIfChanged(chatWorkToggleHost, "left", `${rect.left}px`);\n        setStylePropertyIfChanged(chatWorkToggleHost, "top", `${rect.top}px`);\n        setStylePropertyIfChanged(chatWorkToggleHost, "width", `${rect.width}px`);\n      }\n      updateChatWorkToggleElementMode(chatWorkToggleHost);\n      return chatWorkToggleHost;\n    }\n    function installChatWorkToggleClickBridge() {\n      if (chatWorkToggleClickHandler != null) return;\n      chatWorkToggleClickHandler = (event) => {\n        const target = event.target instanceof Element ? event.target : null;\n        if (target?.closest(".app-shell-left-panel") != null && !isOwnedNode(target)) {\n          scheduleStructure("sidebar-navigation");\n        }\n        const button = target?.closest(".codex-theme-native-chat-work-toggle button");\n        if (!(button instanceof HTMLButtonElement) || button.disabled) return;\n        const toggle = button.closest(".codex-theme-native-chat-work-toggle");\n        if (!(toggle instanceof HTMLElement)) return;\n        const buttons = Array.from(toggle.querySelectorAll("button"));\n        const index = buttons.indexOf(button);\n        const mode = index === 0 ? "chat" : index === 1 ? "work" : null;\n        if (mode == null || button.getAttribute("aria-pressed") === "true") return;\n        event.preventDefault();\n        event.stopImmediatePropagation();\n        requestChatWorkMode(mode);\n      };\n      document.addEventListener("click", chatWorkToggleClickHandler, true);\n    }\n    function reportChatWorkToggleRenderError(error) {\n      if (disposed) return;\n      chatWorkToggleLastError = String(error?.stack || error);\n      diagnostics.chatWorkToggleRenderErrors += 1;\n    }\n    async function renderNativeChatWorkToggle() {\n      if (disposed || !document.documentElement) return;\n      if (chatWorkModePending != null && Date.now() > chatWorkModeDeadline) {\n        chatWorkModePending = null;\n        try {\n          chatWorkModeBridge?.cancel();\n        } catch {\n        }\n        chatWorkToggleLastError = "The app did not finish switching Home mode";\n        diagnostics.chatWorkToggleModeSwitchErrors += 1;\n        finishChatWorkToggleTransition();\n      }\n      let homeFiber = compatibility.findHome();\n      if (homeFiber == null) {\n        if (chatWorkToggleTransitionMode != null || chatWorkModePending != null) {\n          ensureChatWorkToggleHost();\n          return;\n        }\n        chatWorkToggleStore = null;\n        chatWorkModeBridge?.dispose();\n        chatWorkModeBridge = null;\n        removeChatWorkToggleHost();\n        return;\n      }\n      try {\n        await ensureChatWorkToggleRuntime();\n      } catch {\n        return;\n      }\n      if (disposed) return;\n      homeFiber = compatibility.findHome();\n      if (homeFiber == null) {\n        if (chatWorkToggleTransitionMode != null || chatWorkModePending != null) {\n          ensureChatWorkToggleHost();\n          return;\n        }\n        chatWorkToggleStore = null;\n        chatWorkModeBridge?.dispose();\n        chatWorkModeBridge = null;\n        removeChatWorkToggleHost();\n        return;\n      }\n      const store = compatibility.homeStore(homeFiber);\n      if (store == null) {\n        throw new Error("The live Codex Home composer store was not found");\n      }\n      connectChatWorkMode(homeFiber, store);\n      reconcileChatWorkMode(homeFiber);\n      ensureChatWorkToggleHost();\n    }\n    function scheduleChatWorkToggleRender() {\n      if (disposed) return;\n      if (chatWorkToggleRenderInFlight) {\n        chatWorkToggleRenderRequested = true;\n        return;\n      }\n      chatWorkToggleRenderInFlight = true;\n      void renderNativeChatWorkToggle().catch(reportChatWorkToggleRenderError).finally(() => {\n        chatWorkToggleRenderInFlight = false;\n        if (chatWorkToggleRenderRequested && !disposed) {\n          chatWorkToggleRenderRequested = false;\n          scheduleChatWorkToggleRender();\n        }\n      });\n    }\n  }\n\n  // src/page/usage-panel.mjs\n  var USAGE_PANEL_ID = "codex-theme-usage-panel";\n  function createUsageController({ getConfig, retainedUsage, onUsage, scheduleRender }) {\n    const USAGE_CACHE_KEY = "codex-theme-usage-cache";\n    const USAGE_REFRESH_MS = 60 * 1e3;\n    const uiState = { usage: retainedUsage ?? null, usageError: null };\n    let installed = false;\n    let disposed = false;\n    let usageTimer = 0;\n    let usageFetchInFlight = null;\n    let cancelUsageFetch = null;\n    loadCachedUsage();\n    function configure() {\n      if (!installed || disposed) return;\n      if (getConfig().usageManagedByHost === true) {\n        if (usageTimer) clearInterval(usageTimer);\n        usageTimer = 0;\n        cancelUsageFetch?.();\n      } else if (!usageTimer) {\n        usageTimer = setInterval(refreshUsage, USAGE_REFRESH_MS);\n        void refreshUsage();\n      }\n    }\n    return {\n      configure,\n      install() {\n        installed = true;\n        configure();\n      },\n      render: renderUsagePanel,\n      update(usage) {\n        if (disposed || usage == null || usageEqual(uiState.usage, usage)) return false;\n        uiState.usage = usage;\n        uiState.usageError = null;\n        try {\n          localStorage.setItem(USAGE_CACHE_KEY, JSON.stringify(usage));\n        } catch {\n        }\n        return true;\n      },\n      get value() {\n        return uiState.usage;\n      },\n      get running() {\n        return usageTimer !== 0;\n      },\n      inspect() {\n        const panel = document.getElementById(USAGE_PANEL_ID);\n        return {\n          value: uiState.usage,\n          placement: panel?.getAttribute("data-placement") ?? null,\n          remainingPercent: panel?.getAttribute("data-remaining-percent") ?? null\n        };\n      },\n      dispose() {\n        if (disposed) return;\n        disposed = true;\n        if (usageTimer) clearInterval(usageTimer);\n        usageTimer = 0;\n        cancelUsageFetch?.();\n        document.getElementById(USAGE_PANEL_ID)?.remove();\n      }\n    };\n    function loadCachedUsage() {\n      if (uiState.usage != null) return;\n      try {\n        const cached = JSON.parse(localStorage.getItem(USAGE_CACHE_KEY) || "null");\n        const cacheIsFresh = Number.isFinite(cached?.capturedAtMs) && Date.now() - cached.capturedAtMs <= 6 * 60 * 60 * 1e3;\n        const resetIsValid = !Number.isFinite(cached?.resetAtMs) || cached.resetAtMs > Date.now();\n        if (cacheIsFresh && resetIsValid) uiState.usage = cached;\n      } catch {\n      }\n    }\n    function usageEqual(left, right) {\n      return left === right || left != null && right != null && left.remainingPercent === right.remainingPercent && left.resetAtMs === right.resetAtMs && left.resetLabel === right.resetLabel && left.capturedAtMs === right.capturedAtMs;\n    }\n    function normalizeUsagePayload(payload) {\n      const rateLimit = payload?.rate_limit;\n      if (rateLimit == null || typeof rateLimit !== "object") return null;\n      const windows = [rateLimit.primary_window, rateLimit.secondary_window].filter((window2) => window2 != null && Number.isFinite(Number(window2.used_percent))).map((window2) => ({\n        usedPercent: Number(window2.used_percent),\n        windowSeconds: Number(window2.limit_window_seconds) || 0,\n        resetAtSeconds: Number(window2.reset_at)\n      }));\n      if (windows.length === 0) return null;\n      const limitingWindow = windows.reduce((current, candidate) => {\n        if (candidate.usedPercent > current.usedPercent) return candidate;\n        if (candidate.usedPercent === current.usedPercent && candidate.windowSeconds > current.windowSeconds) {\n          return candidate;\n        }\n        return current;\n      });\n      return {\n        remainingPercent: Math.round(\n          Math.min(100, Math.max(0, 100 - limitingWindow.usedPercent))\n        ),\n        resetAtMs: Number.isFinite(limitingWindow.resetAtSeconds) ? limitingWindow.resetAtSeconds * 1e3 : null,\n        capturedAtMs: Date.now()\n      };\n    }\n    function fetchUsagePayload() {\n      return new Promise((resolve, reject) => {\n        const bridge = globalThis.electronBridge;\n        if (typeof bridge?.sendMessageFromView !== "function") {\n          reject(new Error("앱 요청 통로를 찾지 못했습니다"));\n          return;\n        }\n        const requestId = globalThis.crypto?.randomUUID?.() || `codex-theme-${Date.now()}-${Math.random().toString(16).slice(2)}`;\n        let settled = false;\n        let timeout = 0;\n        const finish = (callback, value) => {\n          if (settled) return;\n          settled = true;\n          clearTimeout(timeout);\n          cancelUsageFetch = null;\n          window.removeEventListener("message", onMessage);\n          callback(value);\n        };\n        const onMessage = (event) => {\n          const message = event.data;\n          if (message?.type !== "fetch-response" || message.requestId !== requestId) return;\n          if (message.responseType !== "success") {\n            finish(reject, new Error(message.error || "사용량 요청이 실패했습니다"));\n            return;\n          }\n          try {\n            finish(resolve, JSON.parse(message.bodyJsonString || "null"));\n          } catch (error) {\n            finish(reject, error);\n          }\n        };\n        timeout = setTimeout(() => {\n          finish(reject, new Error("사용량 요청 시간이 초과되었습니다"));\n        }, 1e4);\n        cancelUsageFetch = () => finish(reject, new Error("Usage request cancelled"));\n        window.addEventListener("message", onMessage);\n        Promise.resolve().then(() => {\n          if (settled || disposed || getConfig().usageManagedByHost === true) return;\n          return bridge.sendMessageFromView({\n            type: "fetch",\n            requestId,\n            method: "GET",\n            url: "/wham/usage",\n            headers: {\n              "X-OpenAI-Attach-Auth": "1",\n              "X-OpenAI-Attach-Integrity-State": "1",\n              "OAI-Language": navigator.language || "en",\n              originator: "Codex Desktop"\n            }\n          });\n        }).catch((error) => finish(reject, error));\n      });\n    }\n    async function refreshUsage() {\n      if (disposed || usageFetchInFlight) return usageFetchInFlight;\n      usageFetchInFlight = (async () => {\n        try {\n          const usage = normalizeUsagePayload(await fetchUsagePayload());\n          if (disposed || getConfig().usageManagedByHost === true) return;\n          if (usage == null) throw new Error("사용량 응답 형식이 올바르지 않습니다");\n          uiState.usageError = null;\n          onUsage(usage);\n        } catch (error) {\n          if (disposed || getConfig().usageManagedByHost === true) return;\n          const message = error instanceof Error ? error.message : String(error);\n          if (uiState.usageError !== message) {\n            uiState.usageError = message;\n            scheduleRender();\n          }\n        } finally {\n          usageFetchInFlight = null;\n        }\n      })();\n      return usageFetchInFlight;\n    }\n    function formatUsage(usage) {\n      if (!usage || !Number.isFinite(usage.remainingPercent)) {\n        return {\n          value: "—",\n          month: "—",\n          day: "—",\n          title: uiState.usageError || "使用量を確認中です",\n          remainingPercent: null\n        };\n      }\n      let resetTitle = "";\n      let month = "—";\n      let day = "—";\n      const resetDate = Number.isFinite(usage.resetAtMs) ? new Date(usage.resetAtMs) : null;\n      if (resetDate && Number.isFinite(resetDate.getTime())) {\n        month = String(resetDate.getMonth() + 1);\n        day = String(resetDate.getDate());\n        resetTitle = new Intl.DateTimeFormat("ja-JP", {\n          dateStyle: "medium",\n          timeStyle: "short"\n        }).format(resetDate);\n      } else if (typeof usage.resetLabel === "string") {\n        resetTitle = usage.resetLabel.trim();\n      }\n      const remainingPercent = Math.round(Math.min(100, Math.max(0, usage.remainingPercent)));\n      return {\n        value: String(remainingPercent),\n        month,\n        day,\n        title: resetTitle ? `使用量 ${remainingPercent}% 残り · ${resetTitle}リセット` : `使用量 ${remainingPercent}% 残り · 更新時刻を確認中…`,\n        remainingPercent\n      };\n    }\n    function findSidebarFooterContext() {\n      for (const rail of document.querySelectorAll("[data-app-navigation-rail]")) {\n        if (!isVisible(rail)) continue;\n        const footerRow2 = rail.querySelector(":scope > .relative.shrink-0.w-9:has(> .flex.flex-col > .flex button)");\n        if (footerRow2 instanceof HTMLElement && isVisible(footerRow2)) {\n          return { footerRow: footerRow2, placement: "rail" };\n        }\n      }\n      const panel = document.querySelector(".app-shell-left-panel");\n      if (!(panel instanceof HTMLElement)) return null;\n      const scroll = panel.querySelector("[data-app-action-sidebar-scroll]");\n      if (!(scroll instanceof HTMLElement)) return null;\n      const profileButtons = Array.from(panel.querySelectorAll("button.sidebar-item, .sidebar-item button")).filter((button) => !scroll.contains(button) && isVisible(button)).sort((left, right) => right.getBoundingClientRect().bottom - left.getBoundingClientRect().bottom);\n      const profileButton = profileButtons[0];\n      if (!(profileButton instanceof HTMLButtonElement)) return null;\n      const footerRow = profileButton.closest(".h-toolbar");\n      if (!(footerRow instanceof HTMLElement) || !panel.contains(footerRow) || !isVisible(footerRow)) {\n        return null;\n      }\n      return { footerRow, placement: "footer" };\n    }\n    function usagePanelIsAllowed() {\n      return !/^\\/settings(?:\\/|$)/.test(location.pathname);\n    }\n    function renderUsagePanel() {\n      if (!usagePanelIsAllowed()) {\n        document.getElementById(USAGE_PANEL_ID)?.remove();\n        return;\n      }\n      const context = findSidebarFooterContext();\n      if (context == null) {\n        document.getElementById(USAGE_PANEL_ID)?.remove();\n        return;\n      }\n      const host = context.footerRow.parentElement;\n      if (!(host instanceof HTMLElement)) return;\n      document.getElementById("codex-theme-usage-badge")?.remove();\n      for (const hiddenHelp of document.querySelectorAll(\'[data-codex-theme-help-hidden="true"]\')) {\n        removeAttributeIfPresent(hiddenHelp, "data-codex-theme-help-hidden");\n      }\n      let panel = document.getElementById(USAGE_PANEL_ID);\n      if (!(panel instanceof HTMLElement)) {\n        panel = markOwned(document.createElement("section"));\n        panel.id = USAGE_PANEL_ID;\n        panel.setAttribute("role", "img");\n        panel.setAttribute("aria-live", "polite");\n        panel.innerHTML = [\n          \'<svg class="codex-theme-usage-gauge" viewBox="0 0 72 70" aria-hidden="true">\',\n          \'<defs><linearGradient id="codex-theme-usage-spectrum" gradientUnits="userSpaceOnUse" x1="8" y1="0" x2="64" y2="0">\',\n          \'<stop offset="0" stop-color="#28c8df"/><stop offset=".25" stop-color="#36dd86"/>\',\n          \'<stop offset=".5" stop-color="#ffe348"/><stop offset=".75" stop-color="#ff9a36"/>\',\n          \'<stop offset="1" stop-color="#ff514e"/></linearGradient></defs>\',\n          \'<path class="codex-theme-usage-arc" d="M11.751 50 A28 28 0 1 1 60.249 50"/>\',\n          \'<circle class="codex-theme-usage-marker" r="3.2" cx="36" cy="8"/>\',\n          \'<text class="codex-theme-usage-value" x="36" y="43">—</text>\',\n          \'<text class="codex-theme-usage-month" x="22" y="65">—</text>\',\n          \'<text class="codex-theme-usage-day" x="50" y="65">—</text>\',\n          "</svg>"\n        ].join("");\n      }\n      if (panel.parentElement !== host || panel.nextElementSibling !== context.footerRow) {\n        host.insertBefore(panel, context.footerRow);\n      }\n      const formatted = formatUsage(uiState.usage);\n      for (const key of ["value", "month", "day"]) {\n        const label = panel.querySelector(`.codex-theme-usage-${key}`);\n        if (label?.textContent !== formatted[key]) label.textContent = formatted[key];\n      }\n      const marker = panel.querySelector(".codex-theme-usage-marker");\n      const angle = (150 + (formatted.remainingPercent ?? 0) * 2.4) * Math.PI / 180;\n      setAttributeIfChanged(marker, "cx", (36 + 28 * Math.cos(angle)).toFixed(3));\n      setAttributeIfChanged(marker, "cy", (36 + 28 * Math.sin(angle)).toFixed(3));\n      setAttributeIfChanged(panel, "data-placement", context.placement);\n      setAttributeIfChanged(panel, "data-remaining-percent", formatted.remainingPercent == null ? "unknown" : String(formatted.remainingPercent));\n      if (panel.title !== formatted.title) panel.title = formatted.title;\n      setAttributeIfChanged(panel, "aria-label", formatted.title);\n    }\n  }\n\n  // src/page/server-signals.mjs\n  var ACTIVITY_ATTRIBUTE = "data-codex-theme-server-activity";\n  function createServerSignals(retainedLatencies) {\n    let state = { ...retainedLatencies || {} };\n    return {\n      render: renderServerLatencies,\n      get value() {\n        return { ...state };\n      },\n      update(next) {\n        if (shallowEqualObject(state, next || {})) return false;\n        state = { ...next || {} };\n        return true;\n      },\n      dispose() {\n        for (const signal of document.querySelectorAll(".codex-theme-server-signal")) signal.remove();\n        for (const status of document.querySelectorAll(\'[data-codex-theme-native-server-status="true"]\')) {\n          removeAttributeIfPresent(status, "data-codex-theme-native-server-status");\n        }\n        for (const activity of document.querySelectorAll(`[${ACTIVITY_ATTRIBUTE}]`)) {\n          removeAttributeIfPresent(activity, ACTIVITY_ATTRIBUTE);\n        }\n      }\n    };\n    function serverSignalBars(latency) {\n      if (!Number.isFinite(latency)) return 0;\n      if (latency <= 40) return 4;\n      if (latency <= 100) return 3;\n      if (latency <= 250) return 2;\n      return 1;\n    }\n    function createServerSignal(alias) {\n      const signal = markOwned(document.createElement("span"));\n      signal.className = "codex-theme-server-signal";\n      signal.dataset.hostAlias = alias;\n      signal.setAttribute("role", "img");\n      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");\n      svg.setAttribute("viewBox", "0 0 16 16");\n      svg.setAttribute("aria-hidden", "true");\n      const bars = [\n        { x: 1, y: 11, width: 2.5, height: 4 },\n        { x: 4.8, y: 8, width: 2.5, height: 7 },\n        { x: 8.6, y: 5, width: 2.5, height: 10 },\n        { x: 12.4, y: 2, width: 2.5, height: 13 }\n      ];\n      bars.forEach((bar, index) => {\n        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");\n        rect.classList.add("codex-theme-server-signal-bar");\n        rect.dataset.index = String(index + 1);\n        rect.setAttribute("x", String(bar.x));\n        rect.setAttribute("y", String(bar.y));\n        rect.setAttribute("width", String(bar.width));\n        rect.setAttribute("height", String(bar.height));\n        rect.setAttribute("rx", "1.25");\n        svg.appendChild(rect);\n      });\n      signal.appendChild(svg);\n      return signal;\n    }\n    function findServerLabel(scroll, panelRect, alias) {\n      const normalizedAlias = alias.toLocaleLowerCase();\n      const matches = [];\n      const walker = document.createTreeWalker(scroll, NodeFilter.SHOW_TEXT);\n      let textNode;\n      while (textNode = walker.nextNode()) {\n        if (textNode.nodeValue?.trim().toLocaleLowerCase() !== normalizedAlias) continue;\n        const parent = textNode.parentElement;\n        if (!(parent instanceof HTMLElement) || isOwnedNode(parent) || !isVisible(parent)) continue;\n        const rect = parent.getBoundingClientRect();\n        if (rect.left < panelRect.left + panelRect.width * 0.38) continue;\n        matches.push(parent);\n      }\n      matches.sort((left, right) => right.getBoundingClientRect().left - left.getBoundingClientRect().left);\n      return matches[0] ?? null;\n    }\n    function findNativeServerStatus(label) {\n      const row = label.closest(".sidebar-item");\n      if (row instanceof HTMLElement) {\n        const currentStatus = Array.from(row.querySelectorAll(\'[role="img"]\')).find((candidate) => candidate instanceof HTMLElement && !isOwnedNode(candidate) && !candidate.contains(label));\n        if (currentStatus instanceof HTMLElement) return currentStatus;\n      }\n      const legacyStatus = label.parentElement?.querySelector(\n        ":scope > .sidebar-item-icon"\n      );\n      return legacyStatus instanceof HTMLElement && !isOwnedNode(legacyStatus) ? legacyStatus : null;\n    }\n    function findServerActivitySlot(label, signal) {\n      const row = label.closest("[data-app-action-sidebar-project-row]");\n      if (!(row instanceof HTMLElement)) return null;\n      for (const spinner of row.querySelectorAll(\'.animate-spin, [style*="animation-duration"]\')) {\n        if (!(spinner instanceof HTMLElement) || isOwnedNode(spinner) || !spinner.querySelector("svg")) continue;\n        const duration = spinner.style.animationDuration;\n        const status = spinner.parentElement;\n        const isTaskSpinner = duration === "2000ms" || duration === "2s" || spinner.classList.contains("animate-spin") && (status?.getAttribute("role") === "status" || status?.classList.contains("text-token-foreground/70"));\n        if (!isTaskSpinner) continue;\n        let slot = spinner;\n        while (slot.parentElement && slot.parentElement !== row && !slot.parentElement.contains(label)) {\n          slot = slot.parentElement;\n        }\n        const group = slot.parentElement;\n        if (!group || group === row || !group.contains(label) || !group.contains(signal) || slot.contains(signal) || slot.querySelector("button, [role=\'button\']")) continue;\n        if (!["flex", "inline-flex"].includes(getComputedStyle(group).display)) continue;\n        return slot;\n      }\n      return null;\n    }\n    function renderServerLatencies() {\n      const panel = document.querySelector(".app-shell-left-panel");\n      const scroll = panel?.querySelector("[data-app-action-sidebar-scroll]");\n      if (!(panel instanceof HTMLElement) || !(scroll instanceof HTMLElement)) return;\n      const latencies = state;\n      const panelRect = panel.getBoundingClientRect();\n      const desiredSignals = /* @__PURE__ */ new Set();\n      const desiredNativeStatuses = /* @__PURE__ */ new Set();\n      const desiredActivitySlots = /* @__PURE__ */ new Set();\n      const existingSignals = new Map(\n        Array.from(scroll.querySelectorAll(".codex-theme-server-signal")).filter((signal) => signal instanceof HTMLElement).map((signal) => [signal.dataset.hostAlias, signal])\n      );\n      for (const [alias, latency] of Object.entries(latencies)) {\n        let signal = existingSignals.get(alias);\n        const label = findServerLabel(scroll, panelRect, alias);\n        if (!(label instanceof HTMLElement)) continue;\n        if (!(signal instanceof HTMLElement)) signal = createServerSignal(alias);\n        const nativeStatus = findNativeServerStatus(label);\n        if (nativeStatus instanceof HTMLElement) {\n          if (signal.nextElementSibling !== nativeStatus) {\n            nativeStatus.insertAdjacentElement("beforebegin", signal);\n          }\n          setAttributeIfChanged(signal, "data-placement", "native-status");\n          desiredNativeStatuses.add(nativeStatus);\n          setAttributeIfChanged(nativeStatus, "data-codex-theme-native-server-status", "true");\n        } else {\n          if (signal.previousElementSibling !== label) {\n            label.insertAdjacentElement("afterend", signal);\n          }\n          setAttributeIfChanged(signal, "data-placement", "label");\n        }\n        desiredSignals.add(signal);\n        const activitySlot = findServerActivitySlot(label, signal);\n        if (activitySlot) {\n          setAttributeIfChanged(activitySlot, ACTIVITY_ATTRIBUTE, "true");\n          desiredActivitySlots.add(activitySlot);\n        }\n        const barCount = serverSignalBars(latency);\n        setAttributeIfChanged(signal, "data-bars", String(barCount));\n        for (const bar of signal.querySelectorAll(".codex-theme-server-signal-bar")) {\n          const index = Number(bar.getAttribute("data-index"));\n          setAttributeIfChanged(bar, "data-active", index <= barCount ? "true" : "false");\n        }\n        const roundedLatency = Number.isFinite(latency) ? Math.round(latency) : null;\n        const description = roundedLatency == null ? "未接続、信号 0/4" : `応答 ${roundedLatency}ミリ秒、信号 ${barCount}/4`;\n        setAttributeIfChanged(signal, "aria-label", description);\n        if (signal.title !== description) signal.title = description;\n      }\n      for (const signal of existingSignals.values()) {\n        if (!desiredSignals.has(signal)) signal.remove();\n      }\n      for (const nativeStatus of scroll.querySelectorAll(\n        \'[data-codex-theme-native-server-status="true"]\'\n      )) {\n        if (!desiredNativeStatuses.has(nativeStatus)) {\n          removeAttributeIfPresent(nativeStatus, "data-codex-theme-native-server-status");\n        }\n      }\n      for (const activity of document.querySelectorAll(`[${ACTIVITY_ATTRIBUTE}]`)) {\n        if (!desiredActivitySlots.has(activity)) removeAttributeIfPresent(activity, ACTIVITY_ATTRIBUTE);\n      }\n    }\n  }\n\n  // src/page/composer.mjs\n  function createComposerController({ getConfig, diagnostics }) {\n    const RAINBOW_FRAME_INTERVAL_MS = 1e3 / 30;\n    const RAINBOW_ACTIVE_GRACE_MS = Number(getConfig()?.timings?.rainbowGraceMs) || 900;\n    let disposed = false;\n    let composerSurface = null;\n    let composerCanvas = null;\n    let composerResizeObserver = null;\n    let composerAnimationFrame = 0;\n    let composerLastDrawTimestamp = -Infinity;\n    let composerGeometryKey = "";\n    let composerSegments = [];\n    let composerActiveUntil = 0;\n    let composerActive = false;\n    function reconcile({ discover = true } = {}) {\n      if (disposed) return null;\n      if (discover || !composerSurface?.isConnected || !isVisible(composerSurface)) {\n        const next = findComposerSurface();\n        if (next !== composerSurface) setComposerSurface(next);\n      }\n      return composerSurface;\n    }\n    function evaluate() {\n      if (disposed) return false;\n      if (composerSurface == null || !composerSurface.isConnected || !isVisible(composerSurface)) {\n        reconcile();\n      }\n      const detected = composerIsActive(composerSurface);\n      const now = performance.now();\n      if (detected) composerActiveUntil = now + RAINBOW_ACTIVE_GRACE_MS;\n      setComposerActive(detected || composerSurface != null && now < composerActiveUntil);\n      return composerActive;\n    }\n    function dispose() {\n      if (disposed) return;\n      disposed = true;\n      setComposerSurface(null);\n    }\n    return {\n      reconcile,\n      evaluate,\n      dispose,\n      get surface() {\n        return composerSurface;\n      },\n      get animating() {\n        return composerAnimationFrame !== 0;\n      },\n      inspect: () => ({\n        attached: composerSurface?.isConnected === true,\n        active: composerActive,\n        ready: composerCanvas?.dataset.ready === "true",\n        segmentCount: Number(composerCanvas?.dataset.segmentCount) || 0\n      })\n    };\n    function findComposerSurface() {\n      const editors = Array.from(document.querySelectorAll(\n        \'[data-codex-composer="true"], textarea, [contenteditable="true"][role="textbox"], [contenteditable="true"][data-placeholder]\'\n      )).filter((element) => {\n        if (!(element instanceof HTMLElement) || !isVisible(element)) return false;\n        const rect = element.getBoundingClientRect();\n        return rect.width >= 240 && rect.height >= 20;\n      }).sort((left, right) => {\n        const leftRect = left.getBoundingClientRect();\n        const rightRect = right.getBoundingClientRect();\n        return rightRect.bottom - leftRect.bottom || rightRect.width - leftRect.width;\n      });\n      const editor = editors[0];\n      if (!(editor instanceof HTMLElement)) return null;\n      const layoutRoot = editor.closest(\n        "[data-composer-layout][data-composer-surface-variant]"\n      );\n      if (layoutRoot instanceof HTMLElement && isVisible(layoutRoot)) {\n        for (let surface2 = editor.parentElement; surface2 && layoutRoot.contains(surface2); surface2 = surface2.parentElement) {\n          const rect = surface2.getBoundingClientRect();\n          const radius = Number.parseFloat(getComputedStyle(surface2).borderRadius);\n          if (rect.width >= 320 && rect.height >= 48 && rect.height <= 260 && Number.isFinite(radius) && radius >= 8 && surface2.querySelector("button")) {\n            return surface2;\n          }\n          if (surface2 === layoutRoot) break;\n        }\n        return layoutRoot;\n      }\n      if (composerSurface instanceof HTMLElement && composerSurface.isConnected && isVisible(composerSurface) && composerSurface.contains(editor)) {\n        return composerSurface;\n      }\n      const form = editor.closest("form");\n      if (form instanceof HTMLElement && isVisible(form)) return form;\n      let surface = editor.parentElement;\n      let candidate = null;\n      for (let depth = 0; surface && depth < 8; depth += 1, surface = surface.parentElement) {\n        const rect = surface.getBoundingClientRect();\n        if (rect.width >= 320 && rect.height >= 48 && rect.height <= 260 && surface.querySelector("button")) {\n          candidate = surface;\n        }\n        if (rect.width >= window.innerWidth * 0.92) break;\n      }\n      return candidate;\n    }\n    function composerIsActive(surface) {\n      if (!(surface instanceof HTMLElement)) return false;\n      if (getConfig().rainbowPreview) return true;\n      const stopPattern = /(?:stop|cancel|interrupt|停止|中止|キャンセル|중지|정지|취소)/i;\n      const controls = Array.from(surface.querySelectorAll("button, [role=button]")).filter((element) => element instanceof HTMLElement && isVisible(element));\n      if (controls.some((element) => stopPattern.test([\n        element.getAttribute("aria-label"),\n        element.getAttribute("title"),\n        element.getAttribute("data-testid"),\n        element.textContent\n      ].filter(Boolean).join(" ")))) {\n        return true;\n      }\n      return surface.querySelector(\n        \'[aria-busy="true"], [data-state="streaming"], [data-status="running"]\'\n      ) != null;\n    }\n    function setComposerSurface(nextSurface) {\n      if (composerSurface === nextSurface && composerCanvas?.isConnected) return;\n      stopComposerAnimation();\n      composerResizeObserver?.disconnect();\n      composerResizeObserver = null;\n      if (composerSurface instanceof HTMLElement) {\n        removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-composer");\n        removeAttributeIfPresent(composerSurface, "data-codex-theme-rainbow-active");\n      }\n      composerCanvas?.remove();\n      composerSurface = nextSurface instanceof HTMLElement ? nextSurface : null;\n      composerCanvas = null;\n      composerGeometryKey = "";\n      composerSegments = [];\n      composerActive = false;\n      composerActiveUntil = 0;\n      if (!(composerSurface instanceof HTMLElement)) return;\n      setAttributeIfChanged(composerSurface, "data-codex-theme-rainbow-composer", "attached");\n      setAttributeIfChanged(composerSurface, "data-codex-theme-rainbow-active", "false");\n      const canvas = markOwned(document.createElement("canvas"));\n      canvas.className = "codex-theme-rainbow-canvas";\n      canvas.setAttribute("aria-hidden", "true");\n      canvas.setAttribute("data-effect", "surface-fill");\n      composerSurface.appendChild(canvas);\n      composerCanvas = canvas;\n      diagnostics.composerCanvasCreates += 1;\n      if (typeof ResizeObserver === "function") {\n        composerResizeObserver = new ResizeObserver(() => {\n          composerGeometryKey = "";\n          if (composerActive) drawRainbowFrame(performance.now());\n        });\n        composerResizeObserver.observe(composerSurface);\n      }\n    }\n    function drawRainbowFrame(timestamp) {\n      if (!(composerCanvas instanceof HTMLCanvasElement) || !(composerSurface instanceof HTMLElement)) {\n        return;\n      }\n      const canvasRect = composerCanvas.getBoundingClientRect();\n      const surfaceRect = composerSurface.getBoundingClientRect();\n      const cssWidth = canvasRect.width || surfaceRect.width;\n      const cssHeight = canvasRect.height || surfaceRect.height;\n      if (cssWidth < 2 || cssHeight < 2) return;\n      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);\n      const pixelWidth = Math.round(cssWidth * pixelRatio);\n      const pixelHeight = Math.round(cssHeight * pixelRatio);\n      if (composerCanvas.width !== pixelWidth || composerCanvas.height !== pixelHeight) {\n        composerCanvas.width = pixelWidth;\n        composerCanvas.height = pixelHeight;\n      }\n      const context = composerCanvas.getContext("2d");\n      if (context == null) return;\n      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);\n      context.clearRect(0, 0, cssWidth, cssHeight);\n      const metricsKey = `${Math.round(cssWidth * 10)}x${Math.round(cssHeight * 10)}`;\n      const segmentCount = Math.min(480, Math.max(180, Math.ceil(cssWidth / 3)));\n      const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;\n      const duration = reducedMotion ? 8e3 : 2400;\n      const phase = timestamp % duration / duration;\n      const geometryKey = `${metricsKey}:${segmentCount}`;\n      if (composerGeometryKey !== geometryKey) {\n        composerGeometryKey = geometryKey;\n        const bandWidth = cssWidth / segmentCount;\n        composerSegments = Array.from({ length: segmentCount }, (_, index) => ({\n          x: index * bandWidth,\n          width: bandWidth + 1\n        }));\n      }\n      for (let index = 0; index < composerSegments.length; index += 1) {\n        const segment = composerSegments[index];\n        const hue = ((index / segmentCount - phase) * 360 + 360) % 360;\n        context.fillStyle = `hsl(${hue}deg 100% 58%)`;\n        context.fillRect(segment.x, 0, segment.width, cssHeight);\n      }\n      setAttributeIfChanged(composerCanvas, "data-ready", "true");\n      setAttributeIfChanged(composerCanvas, "data-pixel-ratio", String(pixelRatio));\n      setAttributeIfChanged(composerCanvas, "data-segment-count", String(segmentCount));\n    }\n    function animateComposer(timestamp) {\n      if (disposed || !composerActive || !(composerCanvas instanceof HTMLCanvasElement) || !composerCanvas.isConnected || !(composerSurface instanceof HTMLElement)) {\n        composerAnimationFrame = 0;\n        return;\n      }\n      if (timestamp - composerLastDrawTimestamp >= RAINBOW_FRAME_INTERVAL_MS) {\n        drawRainbowFrame(timestamp);\n        composerLastDrawTimestamp = timestamp;\n      }\n      composerAnimationFrame = requestAnimationFrame(animateComposer);\n    }\n    function startComposerAnimation() {\n      if (composerAnimationFrame || !composerActive) return;\n      composerLastDrawTimestamp = -Infinity;\n      composerAnimationFrame = requestAnimationFrame(animateComposer);\n    }\n    function stopComposerAnimation() {\n      if (composerAnimationFrame) cancelAnimationFrame(composerAnimationFrame);\n      composerAnimationFrame = 0;\n      composerLastDrawTimestamp = -Infinity;\n    }\n    function setComposerActive(active) {\n      if (!(composerSurface instanceof HTMLElement)) active = false;\n      if (composerActive === active) return;\n      composerActive = active;\n      if (composerSurface instanceof HTMLElement) {\n        setAttributeIfChanged(\n          composerSurface,\n          "data-codex-theme-rainbow-active",\n          active ? "true" : "false"\n        );\n      }\n      if (active) startComposerAnimation();\n      else stopComposerAnimation();\n    }\n  }\n\n  // src/page/fire.mjs\n  function createFireController({ getConfig, diagnostics, sessions }) {\n    const FIRE_FRAME_INTERVAL_MS = 250;\n    const THUMB_FIRE_GROWTH_DURATION_MS = 5 * 60 * 1e3;\n    const WALLPAPER_IMAGE_WIDTH = 4032;\n    const WALLPAPER_IMAGE_HEIGHT = 3024;\n    const HAND_FIRE_POINTS = [\n      { side: "left", x: 1200, y: 1090 },\n      { side: "right", x: 2510, y: 1080 }\n    ];\n    let disposed = false;\n    let fireSurface = null;\n    let fireLayer = null;\n    let fireImages = [];\n    let fireResizeObserver = null;\n    let fireGeometryFrame = 0;\n    let fireTimer = 0;\n    let fireActive = false;\n    let fireActiveStartedAt = 0;\n    let fireCurrentSessionKey = null;\n    return {\n      reconcile: () => setFireSurface(findMainSurface()),\n      configure: updateFireAsset,\n      setActive: setFireActive,\n      get running() {\n        return fireTimer !== 0;\n      },\n      inspect: () => ({\n        attached: fireLayer?.isConnected === true,\n        active: fireActive,\n        sessionKey: fireCurrentSessionKey,\n        elapsedMs: fireActiveStartedAt > 0 ? Math.max(0, Date.now() - fireActiveStartedAt) : 0,\n        retainedSessionCount: sessions.size\n      }),\n      dispose() {\n        if (disposed) return;\n        disposed = true;\n        stopFireTimer();\n        if (fireGeometryFrame) cancelAnimationFrame(fireGeometryFrame);\n        fireGeometryFrame = 0;\n        fireActive = false;\n        setFireSurface(null);\n      }\n    };\n    function setFireSurface(nextSurface) {\n      if (fireSurface === nextSurface && fireSurface?.isConnected) {\n        setAttributeIfChanged(fireSurface, "data-codex-theme-wallpaper-root", "true");\n        return;\n      }\n      fireResizeObserver?.disconnect();\n      fireResizeObserver = null;\n      fireLayer?.remove();\n      fireLayer = null;\n      fireImages = [];\n      if (fireSurface instanceof HTMLElement) {\n        removeAttributeIfPresent(fireSurface, "data-codex-theme-wallpaper-root");\n      }\n      fireSurface = nextSurface instanceof HTMLElement ? nextSurface : null;\n      if (!(fireSurface instanceof HTMLElement)) return;\n      setAttributeIfChanged(fireSurface, "data-codex-theme-wallpaper-root", "true");\n      if (typeof ResizeObserver === "function") {\n        fireResizeObserver = new ResizeObserver(scheduleFireGeometry);\n        fireResizeObserver.observe(fireSurface);\n      }\n      if (fireActive) {\n        ensureFireLayer();\n        scheduleFireGeometry();\n      }\n    }\n    function ensureFireLayer() {\n      if (!(fireSurface instanceof HTMLElement) || fireLayer?.isConnected && fireImages.length === HAND_FIRE_POINTS.length && fireImages.every((fire) => fire.image.isConnected)) {\n        return;\n      }\n      fireLayer?.remove();\n      const layer = markOwned(document.createElement("div"));\n      layer.className = "codex-theme-thumb-fire-layer";\n      layer.setAttribute("aria-hidden", "true");\n      fireSurface.prepend(layer);\n      fireLayer = layer;\n      fireImages = HAND_FIRE_POINTS.map((point) => {\n        const image = markOwned(document.createElement("img"));\n        image.className = "codex-theme-thumb-fire";\n        image.dataset.side = point.side;\n        image.alt = "";\n        image.draggable = false;\n        image.decoding = "async";\n        image.setAttribute("aria-hidden", "true");\n        image.addEventListener("load", () => {\n          setAttributeIfChanged(image, "data-ready", "true");\n          scheduleFireGeometry();\n        });\n        image.src = getConfig().fireDataUrl || "";\n        if (image.complete && image.naturalWidth > 0) {\n          setAttributeIfChanged(image, "data-ready", "true");\n        }\n        layer.appendChild(image);\n        return { image, point, scaleX: 1, scaleY: 1 };\n      });\n      diagnostics.fireLayerCreates += 1;\n    }\n    function updateFireAsset() {\n      for (const fire of fireImages) {\n        if (fire.image.src === getConfig().fireDataUrl) continue;\n        removeAttributeIfPresent(fire.image, "data-ready");\n        fire.image.src = getConfig().fireDataUrl || "";\n      }\n    }\n    function scheduleFireGeometry() {\n      if (disposed || fireGeometryFrame) return;\n      fireGeometryFrame = requestAnimationFrame(() => {\n        fireGeometryFrame = 0;\n        positionFireImages();\n      });\n    }\n    function positionFireImages() {\n      if (!(fireSurface instanceof HTMLElement) || !(fireLayer instanceof HTMLElement) || !isVisible(fireSurface)) {\n        return false;\n      }\n      const surfaceRect = fireSurface.getBoundingClientRect();\n      const scale = Math.max(\n        surfaceRect.width / WALLPAPER_IMAGE_WIDTH,\n        surfaceRect.height / WALLPAPER_IMAGE_HEIGHT\n      );\n      const imageWidth = WALLPAPER_IMAGE_WIDTH * scale;\n      const imageHeight = WALLPAPER_IMAGE_HEIGHT * scale;\n      const imageOffsetX = (surfaceRect.width - imageWidth) / 2;\n      const imageOffsetY = (surfaceRect.height - imageHeight) / 2;\n      const baseWidth = Math.max(72, Math.min(112, 160 * scale));\n      const baseHeight = Math.max(118, Math.min(180, 255 * scale));\n      const elapsedMs = fireActive && fireActiveStartedAt > 0 ? Math.max(0, Date.now() - fireActiveStartedAt) : 0;\n      const growthStepCount = Math.max(1, Math.round(THUMB_FIRE_GROWTH_DURATION_MS / 1e3));\n      const growthStep = Math.min(growthStepCount, Math.floor(elapsedMs / 1e3));\n      const growthProgress = growthStep / growthStepCount;\n      const easedGrowth = Math.pow(growthProgress, 0.72);\n      const secondPhase = elapsedMs % 1e3 / 1e3;\n      const secondPulse = Math.sin(secondPhase * Math.PI);\n      const pulseScaleX = 1 + secondPulse * (0.035 + growthProgress * 0.075);\n      const pulseScaleY = 1 + secondPulse * (0.025 + growthProgress * 0.055);\n      const previousCanvasWidth = baseWidth * 2;\n      const previousCanvasHeight = baseHeight * 2.35;\n      const maximumScaleX = Math.max(1, surfaceRect.width * 0.9 / previousCanvasWidth);\n      const maximumScaleY = Math.max(1, surfaceRect.height * 1.12 / previousCanvasHeight);\n      const transformScaleX = (1 + easedGrowth) * (1 + easedGrowth * (maximumScaleX - 1)) * pulseScaleX;\n      const transformScaleY = (1 + easedGrowth * 1.35) * (1 + easedGrowth * (maximumScaleY - 1)) * pulseScaleY;\n      for (const fire of fireImages) {\n        const anchorX = imageOffsetX + fire.point.x * scale;\n        const anchorY = imageOffsetY + fire.point.y * scale;\n        setStylePropertyIfChanged(\n          fire.image,\n          "left",\n          `${Math.round((anchorX - baseWidth / 2) * 10) / 10}px`\n        );\n        setStylePropertyIfChanged(\n          fire.image,\n          "top",\n          `${Math.round((anchorY - baseHeight) * 10) / 10}px`\n        );\n        setStylePropertyIfChanged(fire.image, "width", `${Math.round(baseWidth * 10) / 10}px`);\n        setStylePropertyIfChanged(fire.image, "height", `${Math.round(baseHeight * 10) / 10}px`);\n        setStylePropertyIfChanged(\n          fire.image,\n          "--codex-theme-fire-scale-x",\n          String(transformScaleX)\n        );\n        setStylePropertyIfChanged(\n          fire.image,\n          "--codex-theme-fire-scale-y",\n          String(transformScaleY)\n        );\n        fire.scaleX = transformScaleX;\n        fire.scaleY = transformScaleY;\n      }\n      return true;\n    }\n    function startFireTimer() {\n      if (fireTimer) return;\n      fireTimer = setInterval(scheduleFireGeometry, FIRE_FRAME_INTERVAL_MS);\n    }\n    function stopFireTimer() {\n      if (fireTimer) clearInterval(fireTimer);\n      fireTimer = 0;\n    }\n    function setFireActive(active, identity) {\n      const sessionKey = identity?.key || "view:unkeyed";\n      if (active) {\n        if (!(fireSurface instanceof HTMLElement) || !fireSurface.isConnected) {\n          setFireSurface(findMainSurface());\n        }\n        if (!(fireSurface instanceof HTMLElement)) return;\n        const startedAt = sessions.start(identity);\n        fireCurrentSessionKey = sessionKey;\n        fireActiveStartedAt = startedAt;\n        fireActive = true;\n        ensureFireLayer();\n        for (const fire of fireImages) {\n          setAttributeIfChanged(fire.image, "data-active", "true");\n        }\n        startFireTimer();\n        scheduleFireGeometry();\n        return;\n      }\n      sessions.end(identity);\n      if (!fireActive) return;\n      fireActive = false;\n      fireActiveStartedAt = 0;\n      fireCurrentSessionKey = null;\n      for (const fire of fireImages) removeAttributeIfPresent(fire.image, "data-active");\n      stopFireTimer();\n    }\n  }\n\n  // src/page/activity.mjs\n  function createActivityTracker(retainedStarts) {\n    const sessionStarts = retainedStarts && typeof retainedStarts === "object" ? { ...retainedStarts } : /* @__PURE__ */ Object.create(null);\n    function snapshot() {\n      const threadRows = Array.from(document.querySelectorAll("[data-app-action-sidebar-thread-row]"));\n      const projectRows = Array.from(document.querySelectorAll("[data-app-action-sidebar-project-row]"));\n      const activeThreadRows = activeSidebarSessionRows(threadRows);\n      const activeProjectRows = activeCollapsedProjectRows(projectRows);\n      retainActiveSessions(activeThreadRows, activeProjectRows, threadRows);\n      return { activeThreadRows, activeProjectRows, identity: currentSessionIdentity(threadRows, projectRows) };\n    }\n    function start(identity) {\n      const key = identity?.key || "view:unkeyed";\n      let startedAt = sessionStarts[key];\n      if (!Number.isFinite(startedAt) && identity?.fallbackKey) startedAt = sessionStarts[identity.fallbackKey];\n      if (!Number.isFinite(startedAt)) startedAt = Date.now();\n      sessionStarts[key] = startedAt;\n      pruneSessionStarts();\n      return startedAt;\n    }\n    return {\n      snapshot,\n      start,\n      end(identity) {\n        if (identity?.key) delete sessionStarts[identity.key];\n      },\n      retain: () => ({ ...sessionStarts }),\n      get size() {\n        return Object.keys(sessionStarts).length;\n      }\n    };\n    function currentSessionIdentity(threadRows, projectRows) {\n      const currentThread = threadRows.find(\n        (row) => row.dataset.appActionSidebarThreadActive === "true"\n      ) || threadRows.find((row) => row.getAttribute("aria-current") === "page");\n      if (currentThread instanceof HTMLElement) {\n        const threadId = currentThread.dataset.appActionSidebarThreadId;\n        const projectList = currentThread.closest("[data-app-action-sidebar-project-list-id]");\n        const projectId2 = projectList instanceof HTMLElement ? projectList.dataset.appActionSidebarProjectListId : null;\n        if (threadId) {\n          return { key: `thread:${threadId}`, fallbackKey: projectId2 ? `project:${projectId2}` : null };\n        }\n      }\n      const currentProject = projectRows.find((row) => row.getAttribute("aria-current") === "page");\n      const projectId = currentProject?.dataset.appActionSidebarProjectId;\n      if (projectId) return { key: `project:${projectId}`, fallbackKey: null };\n      return { key: "view:unkeyed", fallbackKey: null };\n    }\n    function pruneSessionStarts() {\n      const entries = Object.entries(sessionStarts).filter((entry) => Number.isFinite(entry[1])).sort((left, right) => right[1] - left[1]);\n      for (const [key] of entries.slice(32)) delete sessionStarts[key];\n    }\n    function rowHasActiveSessionIndicator(row) {\n      return row.querySelector(\'[aria-label="Subscribed: active"]\') != null || Array.from(row.querySelectorAll(\'.animate-spin, [style*="animation-duration"]\')).some((element) => {\n        if (!(element instanceof HTMLElement)) return false;\n        const duration = element.style.animationDuration;\n        const statusContainer = element.parentElement;\n        return element.querySelector("svg") != null && (duration === "2000ms" || element.classList.contains("animate-spin") && statusContainer?.classList.contains("text-token-foreground/70") === true);\n      });\n    }\n    function activeSidebarSessionRows(threadRows) {\n      const seenThreadIds = /* @__PURE__ */ new Set();\n      return threadRows.filter((row) => {\n        if (!(row instanceof HTMLElement) || !rowHasActiveSessionIndicator(row)) return false;\n        const threadId = row.dataset.appActionSidebarThreadId;\n        if (!threadId) return true;\n        if (seenThreadIds.has(threadId)) return false;\n        seenThreadIds.add(threadId);\n        return true;\n      });\n    }\n    function activeCollapsedProjectRows(projectRows) {\n      const seenProjectIds = /* @__PURE__ */ new Set();\n      return projectRows.filter((row) => row.dataset.appActionSidebarProjectCollapsed === "true").filter((row) => {\n        if (!(row instanceof HTMLElement) || !rowHasActiveSessionIndicator(row)) return false;\n        const projectId = row.dataset.appActionSidebarProjectId;\n        if (!projectId) return true;\n        if (seenProjectIds.has(projectId)) return false;\n        seenProjectIds.add(projectId);\n        return true;\n      });\n    }\n    function retainActiveSessions(activeThreadRows, activeProjectRows, threadRows) {\n      const now = Date.now();\n      const activeThreadIds = /* @__PURE__ */ new Set();\n      for (const row of activeThreadRows) {\n        const threadId = row.dataset.appActionSidebarThreadId;\n        if (!threadId) continue;\n        activeThreadIds.add(threadId);\n        const threadKey = `thread:${threadId}`;\n        const projectList = row.closest("[data-app-action-sidebar-project-list-id]");\n        const projectId = projectList instanceof HTMLElement ? projectList.dataset.appActionSidebarProjectListId : null;\n        const projectKey = projectId ? `project:${projectId}` : null;\n        const inheritedStart = Number.isFinite(sessionStarts[threadKey]) ? sessionStarts[threadKey] : projectKey && Number.isFinite(sessionStarts[projectKey]) ? sessionStarts[projectKey] : now;\n        sessionStarts[threadKey] = inheritedStart;\n        if (projectKey && !Number.isFinite(sessionStarts[projectKey])) {\n          sessionStarts[projectKey] = inheritedStart;\n        }\n      }\n      for (const row of activeProjectRows) {\n        const projectId = row.dataset.appActionSidebarProjectId;\n        if (!projectId) continue;\n        const projectKey = `project:${projectId}`;\n        if (!Number.isFinite(sessionStarts[projectKey])) sessionStarts[projectKey] = now;\n      }\n      for (const row of threadRows) {\n        if (!(row instanceof HTMLElement)) continue;\n        const threadId = row.dataset.appActionSidebarThreadId;\n        if (threadId && !activeThreadIds.has(threadId) && row.dataset.appActionSidebarThreadActive !== "true") {\n          delete sessionStarts[`thread:${threadId}`];\n        }\n      }\n      pruneSessionStarts();\n    }\n  }\n\n  // src/page/runtime.mjs\n  var RUNTIME_KEY = "__codexThemeRuntime";\n  function installPageRuntime(initialConfig) {\n    const requestedVersion = Number(initialConfig?.version) || 1;\n    const existing = globalThis[RUNTIME_KEY];\n    if (existing?.version === requestedVersion) return existing.install(initialConfig);\n    let retained = null;\n    try {\n      retained = existing?.dispose?.({ preserveStyle: true }) ?? null;\n    } catch {\n    }\n    globalThis.__codexThemeUiObserver?.disconnect?.();\n    clearInterval(globalThis.__codexThemeComposerTimer);\n    clearInterval(globalThis.__codexThemeUsageTimer);\n    try {\n      globalThis.__codexThemeDisposeThumbFire?.();\n    } catch {\n    }\n    delete globalThis.__codexThemeUiObserver;\n    delete globalThis.__codexThemeComposerTimer;\n    delete globalThis.__codexThemeUsageTimer;\n    delete globalThis.__codexThemeDisposeThumbFire;\n    delete globalThis.__installCodexThemeWallpaper;\n    delete globalThis.__setCodexThemeUsage;\n    delete globalThis.__setCodexThemeLatencies;\n    delete globalThis.__prepareCodexThemeUsageProbe;\n    delete globalThis.__collectCodexThemeUsageProbe;\n    delete globalThis.__finishCodexThemeUsageProbe;\n    const runtime = createRuntime(initialConfig, retained);\n    globalThis[RUNTIME_KEY] = runtime;\n    return runtime.install(initialConfig);\n  }\n  function createRuntime(startingConfig, retained) {\n    const ACTIVITY_REFRESH_MS = 500;\n    const COMPOSER_RECOVERY_REFRESH_MS = 2e3;\n    const USAGE_ACTIVITY_GRACE_MS = Number(startingConfig?.timings?.usageGraceMs) || 1200;\n    const RELEVANT_STRUCTURE_SELECTOR = [\n      ".app-shell-left-panel",\n      "[data-app-navigation-rail]",\n      "[data-app-action-sidebar-scroll]",\n      "[data-app-action-sidebar-thread-row]",\n      "[data-app-action-sidebar-project-row]",\n      "[data-app-shell-main-surface]",\n      \'[class*="_MainContentSurface_"]\',\n      "[data-composer-surface-variant]",\n      "[data-codex-composer]",\n      "[data-chatgpt-conversation-selection-target]",\n      ".codex-theme-native-chat-work-toggle",\n      "textarea",\n      \'[contenteditable="true"][role="textbox"]\',\n      \'[contenteditable="true"][data-placeholder]\'\n    ].join(",");\n    let config = { ...startingConfig };\n    let installed = false;\n    let disposed = false;\n    let observer = null;\n    let domReadyHandler = null;\n    let activityTimer = 0;\n    let structureFrame = 0;\n    let activityFrame = 0;\n    let activityState = null;\n    let usageActivityActiveUntil = 0;\n    let lastComposerRecoveryAt = -Infinity;\n    const pendingFeatures = /* @__PURE__ */ new Set();\n    const diagnostics = {\n      installs: 0,\n      evaluations: 0,\n      refreshes: 0,\n      structureReconciles: 0,\n      activityChecks: 0,\n      observerCallbacks: 0,\n      ignoredObserverCallbacks: 0,\n      stateUpdates: 0,\n      composerCanvasCreates: 0,\n      fireLayerCreates: 0,\n      unifiedSidebarPatches: 0,\n      unifiedSidebarRenderRequests: 0,\n      unifiedSidebarRenderErrors: 0,\n      unifiedSidebarRestores: 0,\n      chatWorkToggleLoads: 0,\n      chatWorkToggleLoadErrors: 0,\n      chatWorkToggleRenderErrors: 0,\n      chatWorkToggleModeSwitches: 0,\n      chatWorkToggleModeSwitchErrors: 0,\n      chatWorkToggleMounts: 0,\n      chatWorkToggleRemoves: 0,\n      chatComposerRecoveries: 0\n    };\n    diagnostics.usageRenders = 0;\n    diagnostics.serverSignalRenders = 0;\n    const sessions = createActivityTracker(retained?.sessionStarts);\n    const composer = createComposerController({ getConfig: () => config, diagnostics });\n    const fire = createFireController({ getConfig: () => config, diagnostics, sessions });\n    const servers = createServerSignals(retained?.latencies);\n    const nativeUi = createNativeUiController({\n      diagnostics,\n      scheduleStructure,\n      timings: config.timings,\n      getMainSurface: findMainSurface\n    });\n    const usage = createUsageController({\n      getConfig: () => config,\n      retainedUsage: retained?.usage,\n      onUsage: (value) => updateState({ usage: value }),\n      scheduleRender: () => scheduleFeature("usage")\n    });\n    const runtime = {\n      version: Number(startingConfig?.version) || 1,\n      install,\n      updateState,\n      refresh,\n      inspect,\n      dispose\n    };\n    return runtime;\n    function ensureStyle() {\n      let style = document.getElementById(STYLE_ID);\n      if (!(style instanceof HTMLStyleElement)) {\n        const parent = document.head || document.documentElement;\n        if (!(parent instanceof Element)) return;\n        style = markOwned(document.createElement("style"));\n        style.id = STYLE_ID;\n        parent.appendChild(style);\n      }\n      if (style.textContent !== config.css) style.textContent = config.css || "";\n    }\n    function recoverMissingComposer() {\n      if (composer.surface != null || /^\\/settings(?:\\/|$)/.test(location.pathname)) return;\n      const view = document.querySelector("[data-chatgpt-conversation-selection-target]");\n      if (!isVisible(view)) return;\n      lastComposerRecoveryAt = performance.now();\n      nativeUi.reconcileComposer();\n    }\n    function evaluateActivity() {\n      if (disposed || !document.documentElement) return;\n      if (nativeUi.hasPendingMode()) nativeUi.reconcileHome();\n      diagnostics.activityChecks += 1;\n      const now = performance.now();\n      const currentComposerActive = composer.evaluate();\n      if (composer.surface == null && now - lastComposerRecoveryAt >= COMPOSER_RECOVERY_REFRESH_MS) {\n        recoverMissingComposer();\n      }\n      const { activeThreadRows, activeProjectRows, identity } = sessions.snapshot();\n      const sidebarActive = activeThreadRows.length > 0;\n      const collapsedProjectActive = activeProjectRows.length > 0;\n      const detected = currentComposerActive || sidebarActive || collapsedProjectActive;\n      if (detected) usageActivityActiveUntil = now + USAGE_ACTIVITY_GRACE_MS;\n      const usageActive = detected || now < usageActivityActiveUntil;\n      const activeValue = String(usageActive);\n      if (document.documentElement.dataset.codexThemeSessionActive !== activeValue) {\n        document.documentElement.dataset.codexThemeSessionActive = activeValue;\n      }\n      const currentIdentityIsActive = activeThreadRows.some((row) => identity.key === `thread:${row.dataset.appActionSidebarThreadId}`) || activeProjectRows.some((row) => identity.key === `project:${row.dataset.appActionSidebarProjectId}`);\n      fire.setActive(currentComposerActive || currentIdentityIsActive, identity);\n      activityState = {\n        currentComposerActive,\n        sidebarActive,\n        sidebarActiveCount: activeThreadRows.length,\n        sidebarThreadIds: activeThreadRows.map((row) => row.dataset.appActionSidebarThreadId).filter(Boolean),\n        collapsedProjectActive,\n        collapsedProjectActiveCount: activeProjectRows.length,\n        collapsedProjectIds: activeProjectRows.map((row) => row.dataset.appActionSidebarProjectId).filter(Boolean),\n        active: usageActive\n      };\n    }\n    function renderUsage() {\n      diagnostics.usageRenders += 1;\n      usage.render();\n    }\n    function renderServers() {\n      diagnostics.serverSignalRenders += 1;\n      servers.render();\n    }\n    function reconcileStructure() {\n      if (disposed || !document.documentElement) return;\n      diagnostics.structureReconciles += 1;\n      ensureStyle();\n      renderUsage();\n      nativeUi.reconcile();\n      renderServers();\n      composer.reconcile();\n      recoverMissingComposer();\n      fire.reconcile();\n      scheduleActivity();\n    }\n    function scheduleFeature(feature) {\n      if (disposed) return;\n      pendingFeatures.add(feature);\n      if (structureFrame) return;\n      structureFrame = requestAnimationFrame(() => {\n        structureFrame = 0;\n        const pending = new Set(pendingFeatures);\n        pendingFeatures.clear();\n        if (pending.has("structure")) reconcileStructure();\n        else {\n          if (pending.has("usage")) renderUsage();\n          if (pending.has("servers")) renderServers();\n        }\n      });\n    }\n    function scheduleStructure() {\n      scheduleFeature("structure");\n    }\n    function scheduleActivity() {\n      if (disposed || activityFrame) return;\n      activityFrame = requestAnimationFrame(() => {\n        activityFrame = 0;\n        evaluateActivity();\n      });\n    }\n    function changedNodesAreOwned(record) {\n      const changed = [...record.addedNodes, ...record.removedNodes];\n      return changed.length > 0 && changed.every(isOwnedNode);\n    }\n    function nodeTouchesRelevantStructure(node) {\n      const element = node instanceof Element ? node : node?.parentElement;\n      if (!(element instanceof Element) || isOwnedNode(element)) return false;\n      return element.matches(RELEVANT_STRUCTURE_SELECTOR) || element.querySelector(RELEVANT_STRUCTURE_SELECTOR) != null;\n    }\n    function classifyMutation(record) {\n      if (isOwnedNode(record.target)) return { structure: false, activity: false };\n      const target = record.target instanceof Element ? record.target : record.target?.parentElement;\n      if (record.type === "attributes") {\n        if (!(target instanceof Element)) return { structure: false, activity: false };\n        const inSidebar = target.closest(".app-shell-left-panel, [data-app-navigation-rail]") != null;\n        const inComposer = composer.surface instanceof HTMLElement && composer.surface.contains(target);\n        return { structure: false, activity: inSidebar || inComposer };\n      }\n      if (record.type !== "childList" || changedNodesAreOwned(record)) {\n        return { structure: false, activity: false };\n      }\n      if (target instanceof Element && target.closest(".app-shell-left-panel, [data-app-navigation-rail]")) {\n        return { structure: true, activity: true };\n      }\n      if (target instanceof Element && composer.surface instanceof HTMLElement && (composer.surface.contains(target) || target.contains(composer.surface))) {\n        const changed2 = [...record.addedNodes, ...record.removedNodes];\n        const structure2 = changed2.some((node) => node instanceof Element && nodeTouchesRelevantStructure(node));\n        return { structure: structure2, activity: true };\n      }\n      const changed = [...record.addedNodes, ...record.removedNodes];\n      const structure = changed.some(nodeTouchesRelevantStructure);\n      return { structure, activity: structure };\n    }\n    function installObserver() {\n      observer?.disconnect();\n      observer = new MutationObserver((records) => {\n        diagnostics.observerCallbacks += 1;\n        let structure = false;\n        let activity = false;\n        for (const record of records) {\n          const classification = classifyMutation(record);\n          structure ||= classification.structure;\n          activity ||= classification.activity;\n          if (structure && activity) break;\n        }\n        if (!structure && !activity) diagnostics.ignoredObserverCallbacks += 1;\n        if (structure) {\n          scheduleStructure("mutation");\n        }\n        if (activity) scheduleActivity("mutation");\n      });\n      observer.observe(document.documentElement, {\n        childList: true,\n        subtree: true,\n        attributes: true,\n        attributeFilter: ["aria-busy", "aria-label", "data-state", "data-status", "data-testid"]\n      });\n    }\n    function install(nextConfig) {\n      diagnostics.evaluations += 1;\n      if (disposed) return { installed: false, disposed: true };\n      if (nextConfig && typeof nextConfig === "object") config = { ...config, ...nextConfig };\n      ensureStyle();\n      fire.configure();\n      usage.configure();\n      if (document.documentElement) document.documentElement.dataset.codexThemeWallpaper = "enabled";\n      if (!installed) {\n        installed = true;\n        diagnostics.installs += 1;\n        nativeUi.install();\n        if (document.documentElement) installObserver();\n        activityTimer = setInterval(scheduleActivity, ACTIVITY_REFRESH_MS);\n        if (document.readyState === "loading") {\n          domReadyHandler = () => {\n            if (document.documentElement) {\n              document.documentElement.dataset.codexThemeWallpaper = "enabled";\n              if (!observer) installObserver();\n            }\n            refresh();\n          };\n          document.addEventListener("DOMContentLoaded", domReadyHandler, { once: true });\n        }\n        usage.install();\n      }\n      refresh();\n      return {\n        installed: true,\n        imageBytes: Number(config.imageBytes) || 0,\n        title: document.title,\n        url: location.href,\n        runtime: inspect()\n      };\n    }\n    function updateState(nextState) {\n      if (disposed || nextState == null || typeof nextState !== "object") return false;\n      let changed = false;\n      if (Object.prototype.hasOwnProperty.call(nextState, "usage") && usage.update(nextState.usage)) {\n        changed = true;\n        scheduleFeature("usage");\n      }\n      if (Object.prototype.hasOwnProperty.call(nextState, "latencies") && servers.update(nextState.latencies)) {\n        changed = true;\n        scheduleFeature("servers");\n      }\n      if (changed) diagnostics.stateUpdates += 1;\n      return changed;\n    }\n    function refresh() {\n      if (disposed) return false;\n      diagnostics.refreshes += 1;\n      scheduleStructure();\n      scheduleActivity();\n      return true;\n    }\n    function inspect() {\n      return {\n        version: runtime.version,\n        installed,\n        disposed,\n        diagnostics: { ...diagnostics },\n        resources: {\n          observer: observer != null,\n          activityTimer: activityTimer !== 0,\n          usageTimer: usage.running,\n          composerAnimationFrame: composer.animating,\n          fireTimer: fire.running\n        },\n        nodes: {\n          usagePanels: document.querySelectorAll(`#${USAGE_PANEL_ID}`).length,\n          composerCanvases: document.querySelectorAll(".codex-theme-rainbow-canvas").length,\n          fireLayers: document.querySelectorAll(".codex-theme-thumb-fire-layer").length,\n          fireImages: document.querySelectorAll(".codex-theme-thumb-fire").length,\n          serverSignals: document.querySelectorAll(".codex-theme-server-signal").length,\n          chatWorkToggles: document.querySelectorAll(".codex-theme-native-chat-work-toggle").length\n        },\n        ...nativeUi.inspect(),\n        usage: usage.inspect(),\n        activity: activityState,\n        composer: composer.inspect(),\n        fire: fire.inspect()\n      };\n    }\n    function retainedState() {\n      return {\n        usage: usage.value,\n        latencies: servers.value,\n        sessionStarts: sessions.retain(),\n        chatWorkToggleMode: nativeUi.inspect().chatWorkToggle.mode\n      };\n    }\n    function dispose({ preserveStyle = false } = {}) {\n      const retained2 = retainedState();\n      if (disposed) return retained2;\n      disposed = true;\n      observer?.disconnect();\n      observer = null;\n      if (activityTimer) clearInterval(activityTimer);\n      activityTimer = 0;\n      if (structureFrame) cancelAnimationFrame(structureFrame);\n      if (activityFrame) cancelAnimationFrame(activityFrame);\n      structureFrame = 0;\n      activityFrame = 0;\n      pendingFeatures.clear();\n      if (domReadyHandler) document.removeEventListener("DOMContentLoaded", domReadyHandler);\n      domReadyHandler = null;\n      usage.dispose();\n      nativeUi.dispose();\n      composer.dispose();\n      fire.dispose();\n      servers.dispose();\n      if (document.documentElement) {\n        removeAttributeIfPresent(document.documentElement, "data-codex-theme-session-active");\n        if (!preserveStyle) {\n          document.getElementById(STYLE_ID)?.remove();\n          removeAttributeIfPresent(document.documentElement, "data-codex-theme-wallpaper");\n        }\n      }\n      if (globalThis[RUNTIME_KEY] === runtime) delete globalThis[RUNTIME_KEY];\n      return retained2;\n    }\n  }\n  return __toCommonJS(browser_entry_exports);\n})();\n';
 }
 
-// Work_to_Codex/src/page/styles.mjs
+// src/page/styles.mjs
 function createThemeCss(imageDataUrl) {
   return `
 :root {
@@ -3106,7 +921,8 @@ function createThemeCss(imageDataUrl) {
   --codex-chat-code: rgb(246 248 248 / 90%);
 }
 
-:root:is(.dark, .electron-dark) {
+:root[data-theme="dark"],
+:root:not([data-theme]):is(.dark, .electron-dark) {
   --codex-chat-secondary: rgb(24 29 31 / 82%);
   --codex-chat-input: rgb(28 34 36 / 88%);
   --codex-chat-dropdown: rgb(24 29 31 / 94%);
@@ -3165,8 +981,19 @@ function createThemeCss(imageDataUrl) {
 [data-codex-theme-wallpaper-root="true"]
   :is(
     [class*="_MainContentTopFade_"],
-    .pointer-events-none.absolute.inset-x-0.bottom-0.z-0.h-full.bg-gradient-to-t.from-surface.via-surface
+    .pointer-events-none.absolute.inset-x-0.bottom-0.z-0.bg-gradient-to-t.from-surface.via-surface
   ) {
+  background-image: none !important;
+}
+
+/* Remove the solid search-header backdrop and its trailing fade on these pages. */
+[data-codex-theme-wallpaper-root="true"]
+  .sticky.bg-surface:has(:is(#plugins-store-page-search, #scheduled-page-search)) {
+  background-color: transparent !important;
+}
+
+[data-codex-theme-wallpaper-root="true"]
+  .sticky.bg-surface:has(:is(#plugins-store-page-search, #scheduled-page-search))::after {
   background-image: none !important;
 }
 
@@ -3182,110 +1009,178 @@ function createThemeCss(imageDataUrl) {
   box-shadow: none !important;
 }
 
-#codex-theme-usage-panel {
+/*
+ * Keep the Chat/Work selector outside the native Home React tree. Codex swaps
+ * that tree while changing modes, but this titlebar-level control remains in
+ * one fixed DOM position and therefore cannot inherit the Home remount jitter.
+ */
+.codex-theme-chat-work-toggle-host {
+  position: fixed;
+  z-index: 2147483000;
+  display: flex;
+  height: 48px;
   box-sizing: border-box;
-  width: 100%;
-  flex: none;
-  margin: 0;
-  padding: 9px var(--padding-row-x, 14px) 8px;
-  border-top: 0.5px solid var(--color-border, rgb(127 127 127 / 18%));
-  color: var(--color-text-secondary, var(--color-token-description-foreground));
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
 }
 
-#codex-theme-usage-panel .codex-theme-usage-row {
-  display: flex;
+.codex-theme-native-chat-work-toggle {
+  --mode-toggle-direction: 1;
+  position: relative;
+  isolation: isolate;
+  display: inline-grid;
+  height: 36px;
+  max-width: 100%;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  border-radius: 9999px;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+.codex-theme-chat-work-track {
+  position: absolute;
+  z-index: 0;
+  top: 50%;
+  right: 1px;
+  left: 1px;
+  height: 34px;
+  border-radius: 9999px;
+  background: var(--color-background-mode-toggle-track);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.codex-theme-chat-work-indicator {
+  position: relative;
+  z-index: 1;
+  grid-column: 1;
+  grid-row: 1;
+  width: calc(100% + 9px);
+  margin: -0.5px 0 -0.5px -0.5px;
+  border: 0.5px solid var(--color-border-mode-toggle-selected);
+  border-radius: 9999px;
+  background: var(--color-background-mode-toggle-selected);
+  box-shadow: var(--shadow-mode-toggle-selected);
+  pointer-events: none;
+}
+
+.codex-theme-chat-work-button {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  height: 100%;
   min-width: 0;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-#codex-theme-usage-panel :is(.codex-theme-usage-value, .codex-theme-usage-reset) {
-  min-width: 0;
-  overflow: hidden;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
+  justify-content: center;
+  padding: 0 40px;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--color-text-secondary, var(--color-token-description-foreground));
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
   font-weight: 500;
-  line-height: 1.2;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.codex-theme-chat-work-button[aria-pressed="true"],
+.codex-theme-chat-work-button[aria-pressed="false"]:hover,
+.codex-theme-chat-work-button[aria-pressed="false"]:focus-visible {
+  color: var(--color-text-primary, var(--color-token-foreground));
+}
+
+.codex-theme-chat-work-button[data-mode="chat"] {
+  grid-column: 1;
+  grid-row: 1;
+  padding-inline: 44px 36px;
+}
+
+.codex-theme-chat-work-button[data-mode="work"] {
+  grid-column: 2;
+  grid-row: 1;
+  padding-inline: 36px 44px;
+}
+
+:root[data-codex-theme-chat-work-transition]
+  [data-app-shell-main-surface]
+  div:has(> [data-feature="game-source"]) {
+  opacity: 1 !important;
+  transform: none !important;
+  transition: none !important;
+  animation: none !important;
+}
+
+#codex-theme-usage-panel {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 100%;
+  margin: 0;
+  padding: 8px 0;
+  color: var(--color-text-primary, var(--color-token-foreground, #fff));
+}
+
+#codex-theme-usage-panel[data-placement="rail"] {
+  width: 36px;
+  height: 49px;
+  padding: 0;
+  overflow: visible;
+}
+
+#codex-theme-usage-panel .codex-theme-usage-gauge {
+  display: block;
+  flex: none;
+  width: 56px;
+  height: auto;
+  overflow: visible;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-variant-numeric: tabular-nums;
+  text-anchor: middle;
+}
+
+#codex-theme-usage-panel[data-placement="rail"] .codex-theme-usage-gauge {
+  width: 48px;
+}
+
+#codex-theme-usage-panel .codex-theme-usage-arc {
+  fill: none;
+  stroke: url(#codex-theme-usage-spectrum);
+  stroke-width: 6;
+  stroke-linecap: round;
+}
+
+#codex-theme-usage-panel .codex-theme-usage-marker {
+  fill: url(#codex-theme-usage-spectrum);
+  stroke: #202124;
+  stroke-width: 2.4;
+}
+
 #codex-theme-usage-panel .codex-theme-usage-value {
-  flex: 0 1 auto;
+  fill: currentColor;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -1.2px;
 }
 
-#codex-theme-usage-panel .codex-theme-usage-reset {
-  flex: 0 1 auto;
-  text-align: right;
+#codex-theme-usage-panel :is(.codex-theme-usage-month, .codex-theme-usage-day) {
+  font-size: 15px;
+  font-weight: 600;
 }
 
-#codex-theme-usage-panel .codex-theme-usage-track {
-  position: relative;
-  height: 3px;
-  margin-top: 7px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgb(127 127 127 / 22%);
-  contain: paint;
-}
+#codex-theme-usage-panel .codex-theme-usage-month { fill: #28c8df; }
+#codex-theme-usage-panel .codex-theme-usage-day { fill: #ff6660; }
+#codex-theme-usage-panel[data-remaining-percent="unknown"] .codex-theme-usage-arc { opacity: .25; }
+#codex-theme-usage-panel[data-remaining-percent="unknown"] .codex-theme-usage-marker { visibility: hidden; }
 
-#codex-theme-usage-panel .codex-theme-usage-fill {
-  --codex-theme-usage-clip-right: 100%;
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  border-radius: inherit;
-  background: currentColor;
-  clip-path: inset(0 var(--codex-theme-usage-clip-right) 0 0 round 999px);
-  opacity: 0.72;
-  transition: clip-path 180ms ease, opacity 240ms ease;
-  will-change: clip-path;
-}
-
-:root[data-codex-theme-session-active="true"] #codex-theme-usage-panel .codex-theme-usage-fill {
-  opacity: 1;
-}
-
-#codex-theme-usage-panel .codex-theme-usage-fill::before {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 250%;
-  border-radius: inherit;
-  background: linear-gradient(
-    90deg,
-    hsl(0deg 100% 60%) 0%,
-    hsl(60deg 100% 60%) 8.333%,
-    hsl(120deg 100% 60%) 16.667%,
-    hsl(180deg 100% 60%) 25%,
-    hsl(240deg 100% 60%) 33.333%,
-    hsl(300deg 100% 60%) 41.667%,
-    hsl(360deg 100% 60%) 50%,
-    hsl(60deg 100% 60%) 58.333%,
-    hsl(120deg 100% 60%) 66.667%,
-    hsl(180deg 100% 60%) 75%,
-    hsl(240deg 100% 60%) 83.333%,
-    hsl(300deg 100% 60%) 91.667%,
-    hsl(360deg 100% 60%) 100%
-  );
-  content: "";
-  opacity: 0;
-  transform: translate3d(0, 0, 0);
-  animation: codex-theme-usage-rainbow 3s linear infinite;
-  animation-play-state: paused;
-  transition: opacity 240ms ease;
-  will-change: transform;
-}
-
-:root[data-codex-theme-session-active="true"] #codex-theme-usage-panel .codex-theme-usage-fill::before {
-  opacity: 1;
-  animation-play-state: running;
-}
-
-@keyframes codex-theme-usage-rainbow {
-  to {
-    transform: translate3d(-50%, 0, 0);
-  }
+:root[data-codex-theme-session-active="true"] #codex-theme-usage-panel .codex-theme-usage-marker {
+  stroke: var(--color-text-primary, #fff);
 }
 
 [data-codex-theme-rainbow-composer="attached"] {
@@ -3295,12 +1190,14 @@ function createThemeCss(imageDataUrl) {
 
 .codex-theme-rainbow-canvas {
   position: absolute;
-  z-index: 20;
+  z-index: -1;
   inset: 0;
+  box-sizing: border-box;
   width: 100%;
   height: 100%;
-  border-radius: var(--codex-theme-composer-radius, inherit);
-  clip-path: inset(0 round var(--codex-theme-composer-radius, 25px));
+  overflow: hidden;
+  border-radius: inherit;
+  corner-shape: inherit;
   pointer-events: none;
   contain: strict;
   mix-blend-mode: screen;
@@ -3351,9 +1248,13 @@ function createThemeCss(imageDataUrl) {
   flex: none;
   align-items: center;
   justify-content: center;
-  margin-left: 6px;
+  margin-left: 0;
   color: rgb(54 204 134);
   transition: color 180ms ease, opacity 180ms ease;
+}
+
+.codex-theme-server-signal[data-placement="label"] {
+  margin-left: 6px;
 }
 
 .codex-theme-server-signal[data-bars="0"] {
@@ -3382,16 +1283,26 @@ function createThemeCss(imageDataUrl) {
   display: none !important;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  #codex-theme-usage-panel .codex-theme-usage-fill::before {
-    animation-duration: 10s;
-  }
+[data-app-action-sidebar-project-row][data-app-action-sidebar-project-collapsed="true"] [data-codex-theme-server-activity="true"] {
+  order: -1;
 }
+
+/* Match the 16px signal's inset inside the native 20px connection status slot. */
+[data-app-action-sidebar-project-row][data-app-action-sidebar-project-collapsed="true"] :has(> [data-codex-theme-server-activity="true"]) > .codex-theme-server-signal[data-placement="label"] {
+  margin-inline: 2px;
+}
+
 `;
 }
 
-// Work_to_Codex/src/page/source.mjs
-var PAGE_RUNTIME_VERSION = 24;
+// src/page/source.mjs
+var PAGE_RUNTIME_VERSION = 44;
+function createRuntimeSource(config) {
+  return `(() => {
+${getPageRuntimeBundle()}
+return __codexThemePage.installPageRuntime(${JSON.stringify(config)});
+})()`;
+}
 function createPageSource(imageDataUrl, fireDataUrl, { rainbowPreview = false, usageManagedByHost = false } = {}) {
   const config = {
     version: PAGE_RUNTIME_VERSION,
@@ -3401,12 +1312,12 @@ function createPageSource(imageDataUrl, fireDataUrl, { rainbowPreview = false, u
     usageManagedByHost,
     imageBytes: Buffer.byteLength(imageDataUrl, "utf8")
   };
-  return `(${installPageRuntime.toString()})(${JSON.stringify(config)})`;
+  return createRuntimeSource(config);
 }
 
-// Work_to_Codex/src/main.mjs
-var scriptDirectory = path2.dirname(fileURLToPath(import.meta.url));
-var projectPath = path2.basename(scriptDirectory) === "src" ? path2.dirname(scriptDirectory) : scriptDirectory;
+// src/main.mjs
+var scriptDirectory = path3.dirname(fileURLToPath(import.meta.url));
+var projectPath = path3.basename(scriptDirectory) === "src" ? path3.dirname(scriptDirectory) : scriptDirectory;
 async function main() {
   const options = parseArguments(process.argv.slice(2), projectPath);
   if (options.help) {
@@ -3418,13 +1329,15 @@ async function main() {
     throw new Error("/Applications에서 ChatGPT 또는 Codex 앱을 찾지 못했습니다.");
   }
   validateAssets(options);
-  const codexExecutable = path2.resolve(
-    path2.dirname(appExecutable),
+  const appLauncher = findAppLauncher(projectPath);
+  validateAppLauncher(appLauncher);
+  const codexExecutable = path3.resolve(
+    path3.dirname(appExecutable),
     "..",
     "Resources",
     "codex"
   );
-  const usageClient = fs2.existsSync(codexExecutable) ? new AppServerRateLimitClient(codexExecutable) : null;
+  const usageClient = fs4.existsSync(codexExecutable) ? new AppServerRateLimitClient(codexExecutable) : null;
   console.log(`[wallpaper] 사진: ${options.imagePath}`);
   console.log(`[wallpaper] 불꽃: ${options.firePath}`);
   console.log(`[wallpaper] 앱: ${appExecutable}`);
@@ -3433,8 +1346,8 @@ async function main() {
     console.log("[wallpaper] 검사 완료. 앱은 실행하지 않았습니다.");
     return;
   }
-  fs2.mkdirSync(options.profilePath, { recursive: true, mode: 448 });
-  const usageCachePath = path2.join(options.profilePath, "codex-theme-usage.json");
+  fs4.mkdirSync(options.profilePath, { recursive: true, mode: 448 });
+  const usageCachePath = path3.join(options.profilePath, "codex-theme-usage.json");
   const pinnedSshHosts = parsePinnedSshHosts(SSH_CONFIG_PATH);
   const source = createPageSource(assetDataUrl(options.imagePath), assetDataUrl(options.firePath), {
     rainbowPreview: options.inspectUi,
@@ -3442,260 +1355,247 @@ async function main() {
   });
   const childEnvironment = { ...process.env };
   if (options.skipRemoteSshBoot) childEnvironment.CODEX_SSH_SKIP_APP_SERVER_BOOT = "true";
-  const child = spawn2(
-    appExecutable,
+  const child = options.attachedAppPid != null ? new AttachedApp(options.attachedAppPid) : spawn2(
+    appLauncher,
     [
+      appExecutable,
       "--remote-debugging-pipe",
       `--user-data-dir=${options.profilePath}`,
       "--no-first-run"
     ],
     {
       env: childEnvironment,
-      stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"]
+      stdio: ["ignore", "ignore", "inherit", "pipe", "pipe"]
     }
   );
-  let latencyTimer = 0;
-  let usageTimer = 0;
-  let usageRefreshInFlight = null;
-  let appServerUsageAvailable = false;
-  let lastUsageError = null;
-  let controller = null;
-  const terminate = () => {
-    if (latencyTimer) clearInterval(latencyTimer);
-    if (usageTimer) clearInterval(usageTimer);
-    latencyTimer = 0;
-    usageTimer = 0;
-    usageClient?.close();
-    controller?.dispose();
-    if (!child.killed) child.kill("SIGTERM");
-  };
-  process.once("SIGINT", terminate);
-  process.once("SIGTERM", terminate);
-  process.once("exit", terminate);
-  child.once("error", (error) => {
-    console.error("[wallpaper] 앱을 실행하지 못했습니다:", error.message);
-    process.exitCode = 1;
-  });
-  child.once("exit", (code, signal) => {
-    controller?.dispose();
-    if (latencyTimer) clearInterval(latencyTimer);
-    if (usageTimer) clearInterval(usageTimer);
-    usageClient?.close();
-    if (signal) console.log(`[wallpaper] Codex가 ${signal} 신호로 종료되었습니다.`);
-    else console.log(`[wallpaper] Codex가 종료되었습니다. 코드=${code ?? "unknown"}`);
-    process.exit(code ?? 0);
-  });
-  const cdp = new CdpPipe(child);
-  const usageRequests = /* @__PURE__ */ new Map();
-  let latestUsage = readUsageCache(usageCachePath);
-  let latestLatencies = Object.fromEntries(
-    Object.keys(pinnedSshHosts).map((alias) => [alias, null])
-  );
-  let screenshotCaptured = false;
-  const pushUiState = async (sessionId) => {
-    const expression = `globalThis.__codexThemeRuntime?.updateState(${JSON.stringify({
-      usage: latestUsage,
-      latencies: latestLatencies
-    })}) ?? false`;
-    const result = await cdp.send(
-      "Runtime.evaluate",
-      { expression, returnByValue: true },
-      sessionId
+  const session = new ThemeSession({ child, usageClient });
+  await session.start(async (cdp) => {
+    let usageRefreshInFlight = null;
+    let appServerUsageAvailable = false;
+    let lastUsageError = null;
+    let controller = null;
+    const usageRequests = /* @__PURE__ */ new Map();
+    let latestUsage = readUsageCache(usageCachePath);
+    let latestLatencies = Object.fromEntries(
+      Object.keys(pinnedSshHosts).map((alias) => [alias, null])
     );
-    if (result.exceptionDetails) {
-      throw new Error(result.exceptionDetails.text ?? "화면 상태 갱신에 실패했습니다.");
-    }
-  };
-  const broadcastUiState = async () => {
-    if (!controller) return;
-    await Promise.allSettled(controller.sessionIds().map(pushUiState));
-  };
-  const refreshAccountUsage = async () => {
-    if (usageClient == null || usageRefreshInFlight != null) return usageRefreshInFlight;
-    usageRefreshInFlight = (async () => {
-      try {
-        const usage = await usageClient.read();
-        const visibleValueChanged = latestUsage?.remainingPercent !== usage.remainingPercent || latestUsage?.resetAtMs !== usage.resetAtMs;
-        appServerUsageAvailable = true;
-        latestUsage = usage;
-        writeUsageCache(usageCachePath, usage);
-        lastUsageError = null;
-        if (visibleValueChanged) {
-          console.log(`[wallpaper] Codex 앱 서버 사용량 갱신: ${usage.remainingPercent}% 남음`);
-        }
-        await broadcastUiState();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (lastUsageError !== message) {
-          lastUsageError = message;
-          console.error(`[wallpaper] Codex 앱 서버 사용량을 읽지 못했습니다: ${message}`);
-        }
-      } finally {
-        usageRefreshInFlight = null;
+    let screenshotCaptured = false;
+    const pushUiState = async (sessionId) => {
+      const expression = `globalThis.__codexThemeRuntime?.updateState(${JSON.stringify({
+        usage: latestUsage,
+        latencies: latestLatencies
+      })}) ?? false`;
+      const result = await cdp.send(
+        "Runtime.evaluate",
+        { expression, returnByValue: true },
+        sessionId
+      );
+      if (result.exceptionDetails) {
+        throw new Error(result.exceptionDetails.text ?? "화면 상태 갱신에 실패했습니다.");
       }
-    })();
-    return usageRefreshInFlight;
-  };
-  const inspectUi = async (sessionId) => {
-    const result = await cdp.send(
-      "Runtime.evaluate",
-      {
-        expression: `(() => {
-          const panel = document.querySelector(".app-shell-left-panel");
-          const scroll = panel?.querySelector("[data-app-action-sidebar-scroll]");
-          const rectOf = (element) => {
-            const rect = element.getBoundingClientRect();
-            return {
-              x: Math.round(rect.x),
-              y: Math.round(rect.y),
-              width: Math.round(rect.width),
-              height: Math.round(rect.height),
+    };
+    const broadcastUiState = async () => {
+      if (session.stopped || !controller) return;
+      await Promise.allSettled(controller.sessionIds().map(pushUiState));
+    };
+    const refreshAccountUsage = async () => {
+      if (session.stopped) return;
+      if (usageClient == null || usageRefreshInFlight != null) return usageRefreshInFlight;
+      usageRefreshInFlight = (async () => {
+        try {
+          const usage = await usageClient.read();
+          if (session.stopped) return;
+          const visibleValueChanged = latestUsage?.remainingPercent !== usage.remainingPercent || latestUsage?.resetAtMs !== usage.resetAtMs;
+          appServerUsageAvailable = true;
+          latestUsage = usage;
+          writeUsageCache(usageCachePath, usage);
+          lastUsageError = null;
+          if (visibleValueChanged) {
+            console.log(`[wallpaper] Codex 앱 서버 사용량 갱신: ${usage.remainingPercent}% 남음`);
+          }
+          await broadcastUiState();
+        } catch (error) {
+          if (session.stopped) return;
+          const message = error instanceof Error ? error.message : String(error);
+          if (lastUsageError !== message) {
+            lastUsageError = message;
+            console.error(`[wallpaper] Codex 앱 서버 사용량을 읽지 못했습니다: ${message}`);
+          }
+        } finally {
+          usageRefreshInFlight = null;
+        }
+      })();
+      return usageRefreshInFlight;
+    };
+    const inspectUi = async (sessionId) => {
+      const result = await cdp.send(
+        "Runtime.evaluate",
+        {
+          expression: `(() => {
+            const panel = document.querySelector(".app-shell-left-panel");
+            const scroll = panel?.querySelector("[data-app-action-sidebar-scroll]");
+            const rectOf = (element) => {
+              const rect = element.getBoundingClientRect();
+              return {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+              };
             };
-          };
-          const aliases = [];
-          if (scroll) {
-            const walker = document.createTreeWalker(scroll, NodeFilter.SHOW_TEXT);
-            let node;
-            while ((node = walker.nextNode())) {
-              const value = node.nodeValue?.trim() ?? "";
-              if (/^(VPN|Proxmox|Homelab|Oracle[_-](?:Seoul|Osaka|Chuncheon))$/i.test(value)) {
-                aliases.push({
-                  value,
-                  parentClass: node.parentElement?.className ?? null,
-                  rect: node.parentElement ? rectOf(node.parentElement) : null,
-                });
+            const aliases = [];
+            if (scroll) {
+              const walker = document.createTreeWalker(scroll, NodeFilter.SHOW_TEXT);
+              let node;
+              while ((node = walker.nextNode())) {
+                const value = node.nodeValue?.trim() ?? "";
+                if (/^(VPN|Proxmox|Homelab|Oracle[_-](?:Seoul|Osaka|Chuncheon))$/i.test(value)) {
+                  aliases.push({
+                    value,
+                    parentClass: node.parentElement?.className ?? null,
+                    rect: node.parentElement ? rectOf(node.parentElement) : null,
+                  });
+                }
               }
             }
-          }
-          return {
-            runtime: globalThis.__codexThemeRuntime?.inspect?.() ?? null,
-            panel: panel ? rectOf(panel) : null,
-            scroll: scroll ? rectOf(scroll) : null,
-            aliases,
-            mainSurfaces: Array.from(document.querySelectorAll(
-              '[data-app-shell-main-surface], [class*="_MainContentSurface_"]',
-            )).map((surface) => ({
-              tag: surface.tagName,
-              className: surface.className,
-              rect: rectOf(surface),
-            })),
-            usageResources: performance.getEntriesByType("resource")
-              .map((entry) => entry.name)
-              .filter((name) => name.includes("/wham/usage")),
-          };
-        })()`,
-        returnByValue: true
-      },
-      sessionId
-    );
-    if (result.exceptionDetails) {
-      throw new Error(result.exceptionDetails.text ?? "UI 진단에 실패했습니다.");
-    }
-    console.log(`[wallpaper] UI 진단: ${JSON.stringify(result.result?.value ?? null)}`);
-  };
-  const captureScreenshot = async (sessionId) => {
-    if (!options.screenshotPath || screenshotCaptured) return;
-    screenshotCaptured = true;
-    const screenshot = await cdp.send(
-      "Page.captureScreenshot",
-      { format: "png", fromSurface: true },
-      sessionId
-    );
-    fs2.mkdirSync(path2.dirname(options.screenshotPath), { recursive: true });
-    fs2.writeFileSync(options.screenshotPath, Buffer.from(screenshot.data, "base64"));
-    console.log(`[wallpaper] 검증 화면 저장: ${options.screenshotPath}`);
-    if (options.exitAfterScreenshot) setTimeout(terminate, 100);
-  };
-  const onReady = async ({ sessionId }) => {
-    if (options.inspectUi || options.screenshotPath) {
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-    }
-    if (options.inspectUi) await inspectUi(sessionId);
-    await captureScreenshot(sessionId);
-  };
-  controller = new TargetController({
-    cdp,
-    source,
-    pushUiState,
-    onReady
-  });
-  const refreshLatencies = async () => {
-    latestLatencies = await measurePinnedSshLatencies(pinnedSshHosts);
-    await broadcastUiState();
-  };
-  const captureUsageResponse = async (sessionId, requestId) => {
-    if (appServerUsageAvailable) return;
-    try {
-      const responseBody = await cdp.send("Network.getResponseBody", { requestId }, sessionId);
-      const body = responseBody.base64Encoded ? Buffer.from(responseBody.body, "base64").toString("utf8") : responseBody.body;
-      const usage = normalizeUsagePayload(JSON.parse(body));
-      if (usage == null) return;
-      latestUsage = usage;
-      writeUsageCache(usageCachePath, usage);
-      console.log(`[wallpaper] 사용량 갱신: ${usage.remainingPercent}% 남음`);
+            return {
+              runtime: globalThis.__codexThemeRuntime?.inspect?.() ?? null,
+              panel: panel ? rectOf(panel) : null,
+              scroll: scroll ? rectOf(scroll) : null,
+              aliases,
+              mainSurfaces: Array.from(document.querySelectorAll(
+                '[data-app-shell-main-surface], [class*="_MainContentSurface_"]',
+              )).map((surface) => ({
+                tag: surface.tagName,
+                className: surface.className,
+                rect: rectOf(surface),
+              })),
+              usageResources: performance.getEntriesByType("resource")
+                .map((entry) => entry.name)
+                .filter((name) => name.includes("/wham/usage")),
+            };
+          })()`,
+          returnByValue: true
+        },
+        sessionId
+      );
+      if (result.exceptionDetails) {
+        throw new Error(result.exceptionDetails.text ?? "UI 진단에 실패했습니다.");
+      }
+      console.log(`[wallpaper] UI 진단: ${JSON.stringify(result.result?.value ?? null)}`);
+    };
+    const captureScreenshot = async (sessionId) => {
+      if (session.stopped || !options.screenshotPath || screenshotCaptured) return;
+      screenshotCaptured = true;
+      const screenshot = await cdp.send(
+        "Page.captureScreenshot",
+        { format: "png", fromSurface: true },
+        sessionId
+      );
+      if (session.stopped) return;
+      fs4.mkdirSync(path3.dirname(options.screenshotPath), { recursive: true });
+      fs4.writeFileSync(options.screenshotPath, Buffer.from(screenshot.data, "base64"));
+      console.log(`[wallpaper] 검증 화면 저장: ${options.screenshotPath}`);
+      if (options.exitAfterScreenshot) session.setTimeout(() => session.stop(), 100);
+    };
+    const onReady = async ({ sessionId }) => {
+      if (options.inspectUi || options.screenshotPath) {
+        if (!await session.delay(2500)) return;
+      }
+      if (options.inspectUi) await inspectUi(sessionId);
+      await captureScreenshot(sessionId);
+    };
+    controller = new TargetController({
+      cdp,
+      source,
+      pushUiState,
+      onReady
+    });
+    session.setController(controller);
+    const refreshLatencies = async () => {
+      if (session.stopped) return;
+      const latencies = await measurePinnedSshLatencies(pinnedSshHosts);
+      if (session.stopped) return;
+      latestLatencies = latencies;
       await broadcastUiState();
-    } catch (error) {
-      console.error(`[wallpaper] 사용량 응답을 읽지 못했습니다: ${error.message}`);
-    }
-  };
-  cdp.eventHandler = async (message) => {
-    if (message.method === "Target.targetCreated" || message.method === "Target.targetInfoChanged") {
-      await controller.handleTargetInfo(message.params.targetInfo);
-      return;
-    }
-    if (message.method === "Target.targetDestroyed") {
-      const targetId = message.params.targetId;
-      for (const [key, request] of usageRequests) {
-        if (controller.targetIdForSession(request.sessionId) === targetId) usageRequests.delete(key);
-      }
-      controller.handleTargetDestroyed(targetId);
-      return;
-    }
-    if (message.method === "Target.detachedFromTarget") {
-      controller.handleSessionDetached(message.params.sessionId, message.params.targetId);
-      return;
-    }
-    if (message.method === "Page.loadEventFired" && message.sessionId && controller.targetIdForSession(message.sessionId)) {
+    };
+    const captureUsageResponse = async (sessionId, requestId) => {
+      if (session.stopped || appServerUsageAvailable) return;
       try {
-        await pushUiState(message.sessionId);
+        const responseBody = await cdp.send("Network.getResponseBody", { requestId }, sessionId);
+        if (session.stopped) return;
+        const body = responseBody.base64Encoded ? Buffer.from(responseBody.body, "base64").toString("utf8") : responseBody.body;
+        const usage = normalizeUsagePayload(JSON.parse(body));
+        if (usage == null) return;
+        latestUsage = usage;
+        writeUsageCache(usageCachePath, usage);
+        console.log(`[wallpaper] 사용량 갱신: ${usage.remainingPercent}% 남음`);
+        await broadcastUiState();
       } catch (error) {
-        console.error(`[wallpaper] 새 문서 상태 갱신을 건너뛰었습니다: ${error.message}`);
+        if (session.stopped) return;
+        console.error(`[wallpaper] 사용량 응답을 읽지 못했습니다: ${error.message}`);
       }
-      return;
-    }
-    if (message.method === "Network.responseReceived" && message.sessionId) {
-      const responseUrl = message.params.response?.url ?? "";
-      if (/\/wham\/usage(?:[?#]|$)/.test(responseUrl)) {
-        usageRequests.set(`${message.sessionId}:${message.params.requestId}`, {
-          requestId: message.params.requestId,
-          sessionId: message.sessionId
-        });
+    };
+    cdp.eventHandler = async (message) => {
+      if (message.method === "Target.targetCreated" || message.method === "Target.targetInfoChanged") {
+        await controller.handleTargetInfo(message.params.targetInfo);
+        return;
       }
-      return;
-    }
-    if (message.method === "Network.loadingFinished" && message.sessionId) {
-      const key = `${message.sessionId}:${message.params.requestId}`;
-      const usageRequest = usageRequests.get(key);
-      if (usageRequest) {
-        usageRequests.delete(key);
-        await captureUsageResponse(usageRequest.sessionId, usageRequest.requestId);
+      if (message.method === "Target.targetDestroyed") {
+        const targetId = message.params.targetId;
+        for (const [key, request] of usageRequests) {
+          if (controller.targetIdForSession(request.sessionId) === targetId) usageRequests.delete(key);
+        }
+        controller.handleTargetDestroyed(targetId);
+        return;
       }
-      return;
+      if (message.method === "Target.detachedFromTarget") {
+        controller.handleSessionDetached(message.params.sessionId, message.params.targetId);
+        return;
+      }
+      if (message.method === "Page.loadEventFired" && message.sessionId && controller.targetIdForSession(message.sessionId)) {
+        try {
+          await pushUiState(message.sessionId);
+        } catch (error) {
+          console.error(`[wallpaper] 새 문서 상태 갱신을 건너뛰었습니다: ${error.message}`);
+        }
+        return;
+      }
+      if (message.method === "Network.responseReceived" && message.sessionId) {
+        const responseUrl = message.params.response?.url ?? "";
+        if (/\/wham\/usage(?:[?#]|$)/.test(responseUrl)) {
+          usageRequests.set(`${message.sessionId}:${message.params.requestId}`, {
+            requestId: message.params.requestId,
+            sessionId: message.sessionId
+          });
+        }
+        return;
+      }
+      if (message.method === "Network.loadingFinished" && message.sessionId) {
+        const key = `${message.sessionId}:${message.params.requestId}`;
+        const usageRequest = usageRequests.get(key);
+        if (usageRequest) {
+          usageRequests.delete(key);
+          await captureUsageResponse(usageRequest.sessionId, usageRequest.requestId);
+        }
+        return;
+      }
+      if (message.method === "Network.loadingFailed" && message.sessionId) {
+        usageRequests.delete(`${message.sessionId}:${message.params.requestId}`);
+      }
+    };
+    await cdp.send("Target.setDiscoverTargets", { discover: true });
+    const { targetInfos = [] } = await cdp.send("Target.getTargets");
+    await Promise.all(targetInfos.map((targetInfo) => controller.handleTargetInfo(targetInfo)));
+    if (session.stopped) return;
+    if (usageClient != null) {
+      void refreshAccountUsage();
+      session.setInterval(refreshAccountUsage, 60 * 1e3);
     }
-    if (message.method === "Network.loadingFailed" && message.sessionId) {
-      usageRequests.delete(`${message.sessionId}:${message.params.requestId}`);
-    }
-  };
-  await cdp.send("Target.setDiscoverTargets", { discover: true });
-  const { targetInfos = [] } = await cdp.send("Target.getTargets");
-  await Promise.all(targetInfos.map((targetInfo) => controller.handleTargetInfo(targetInfo)));
-  if (usageClient != null) {
-    void refreshAccountUsage();
-    usageTimer = setInterval(() => void refreshAccountUsage(), 60 * 1e3);
-  }
-  void refreshLatencies();
-  latencyTimer = setInterval(() => void refreshLatencies(), LATENCY_REFRESH_MS);
-  console.log("[wallpaper] 실행기를 닫으면 이 전용 Codex 인스턴스도 함께 종료됩니다.");
+    void refreshLatencies();
+    session.setInterval(refreshLatencies, LATENCY_REFRESH_MS);
+    console.log("[wallpaper] 실행기를 닫으면 이 전용 Codex 인스턴스도 함께 종료됩니다.");
+  });
 }
 main().catch((error) => {
   console.error(`[wallpaper] ${error.message}`);

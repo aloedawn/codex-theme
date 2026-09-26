@@ -1,56 +1,39 @@
 import Foundation
 
-let fileManager = FileManager.default
-let projectURL = Bundle.main.bundleURL.deletingLastPathComponent()
-let scriptURL = projectURL.appendingPathComponent("codex-theme.mjs")
-let logURL = URL(fileURLWithPath: "/private/tmp/codex-theme-launcher.log")
+if CommandLine.arguments.dropFirst().first == "--check" {
+    print("codex-theme-launcher 3")
+    exit(0)
+}
 
-guard fileManager.fileExists(atPath: scriptURL.path) else {
-    fputs("Codex theme script not found: \(scriptURL.path)\n", stderr)
+let files = FileManager.default
+let bundle = Bundle.main.bundleURL
+let project = bundle.deletingLastPathComponent()
+let script = project.appendingPathComponent("codex-theme.mjs")
+let helper = bundle.appendingPathComponent("Contents/MacOS/CodexAppLauncher")
+let paths = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":").map { String($0) + "/node" } ?? []
+let nodes = paths + ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+let apps = ["/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", "/Applications/Codex.app/Contents/MacOS/Codex"]
+
+guard files.fileExists(atPath: script.path), files.isExecutableFile(atPath: helper.path),
+    let node = nodes.first(where: { files.isExecutableFile(atPath: $0) }),
+    let app = apps.first(where: { files.isExecutableFile(atPath: $0) }) else {
+    fputs("Codex theme launcher: app, Node.js, or theme installation is missing\n", stderr)
     exit(1)
 }
-
-if !fileManager.fileExists(atPath: logURL.path) {
-    fileManager.createFile(atPath: logURL.path, contents: nil)
+let logPath = ProcessInfo.processInfo.environment["CODEX_THEME_LOG_PATH"] ?? "/private/tmp/codex-theme-launcher.log"
+let log = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0o600)
+guard log >= 0 else { perror("Codex theme log"); exit(1) }
+dup2(log, STDOUT_FILENO)
+dup2(log, STDERR_FILENO)
+if log > STDERR_FILENO { close(log) }
+let profile = files.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Codex Theme")
+let arguments = [helper.path, "--gui", node, script.path, app,
+    "--remote-debugging-pipe", "--user-data-dir=\(profile.path)", "--no-first-run"]
+let argv = arguments.map { strdup($0) } + [nil]
+// Preserve the original Dock-launched PID all the way into the signed app.
+// The helper forks only the background theme worker, then execs the app here.
+_ = argv.withUnsafeBufferPointer { buffer in
+    execv(helper.path, buffer.baseAddress!)
 }
-
-let logHandle = try FileHandle(forWritingTo: logURL)
-try logHandle.seekToEnd()
-
-let inheritedNodePaths = ProcessInfo.processInfo.environment["PATH"]?
-    .split(separator: ":")
-    .map { String($0) + "/node" } ?? []
-let nodeCandidates = inheritedNodePaths + [
-    "/opt/homebrew/bin/node",
-    "/usr/local/bin/node",
-    "/usr/bin/node",
-]
-
-guard let nodePath = nodeCandidates.first(where: { fileManager.isExecutableFile(atPath: $0) }) else {
-    let message = "Codex theme launcher failed: Node.js executable not found\n"
-    if let data = message.data(using: .utf8) {
-        try? logHandle.write(contentsOf: data)
-    }
-    try? logHandle.close()
-    exit(1)
-}
-
-let process = Process()
-process.executableURL = URL(fileURLWithPath: nodePath)
-process.arguments = [scriptURL.path]
-process.standardOutput = logHandle
-process.standardError = logHandle
-
-do {
-    try process.run()
-    process.waitUntilExit()
-    try? logHandle.close()
-    exit(process.terminationStatus)
-} catch {
-    let message = "Codex theme launcher failed: \(error.localizedDescription)\n"
-    if let data = message.data(using: .utf8) {
-        try? logHandle.write(contentsOf: data)
-    }
-    try? logHandle.close()
-    exit(1)
-}
+perror("Codex theme exec")
+exit(1)

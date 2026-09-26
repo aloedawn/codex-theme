@@ -1,3 +1,24 @@
-.DS_Store
-*.log
-node_modules/
+# Distribution allowlist. Development sources and tests stay local.
+*
+!.gitignore
+!README.md
+!install.sh
+!Launch Codex Theme.command
+!Work_to_Codex/
+!Work_to_Codex/README.md
+!Work_to_Codex/install.sh
+!Work_to_Codex/Launch Codex Theme.command
+!Work_to_Codex/CodexLauncher.swift
+!Work_to_Codex/codex-theme.mjs
+!Work_to_Codex/image.jpg
+!Work_to_Codex/fire.gif
+!Work_to_Codex/native/
+!Work_to_Codex/native/launch-app.c
+!Work_to_Codex/Codex.app.noindex/
+!Work_to_Codex/Codex.app.noindex/Contents/
+!Work_to_Codex/Codex.app.noindex/Contents/Info.plist
+!Work_to_Codex/Codex.app.noindex/Contents/MacOS/
+!Work_to_Codex/Codex.app.noindex/Contents/MacOS/CodexTheme
+!Work_to_Codex/Codex.app.noindex/Contents/MacOS/CodexAppLauncher
+!Work_to_Codex/Codex.app.noindex/Contents/Resources/
+!Work_to_Codex/Codex.app.noindex/Contents/Resources/AppIcon.icns

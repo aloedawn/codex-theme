@@ -1,6 +1,6 @@
 # Codex Theme — Work to Codex
 
-An unofficial macOS launcher that gives the unified Codex/ChatGPT desktop app a custom photo background, animated activity effects, compact usage information, native file-review cards in ChatGPT Work mode, and SSH connection indicators—without modifying the official app bundle or `app.asar`.
+An unofficial macOS launcher that gives the unified Codex/ChatGPT desktop app a custom photo background, animated activity effects, compact usage information, and SSH connection indicators—without modifying the official app bundle or `app.asar`.
 
 The included [`image.jpg`](image.jpg) and [`fire.gif`](fire.gif) reproduce the author's current setup.
 
@@ -8,6 +8,13 @@ The included [`image.jpg`](image.jpg) and [`fire.gif`](fire.gif) reproduce the a
 > This relies on the current Codex desktop UI structure. A major Codex update may require a theme update. It uses a separate app profile, so you may need to sign in again on first launch.
 
 ## Custom features
+
+### macOS launcher and Dock
+
+- Replaces the original Dock launch process with the signed app, so it completes the launch instead of leaving a waiting launcher icon.
+- Uses the installed app's bundle identifier so the pinned theme tile and the running app have the same Dock identity. The tile's launch URL continues to point to the theme launcher.
+- Runs the theme worker in the background with inherited debugging pipes; the worker exits when the app closes those pipes.
+- Preserves the official app's separate privacy-permission identity and signature.
 
 ### Chat surface
 
@@ -17,29 +24,32 @@ The included [`image.jpg`](image.jpg) and [`fire.gif`](fire.gif) reproduce the a
 
 ### Codex Home Chat / Work toggle
 
-- Adds ChatGPT's native **Chat / Work** composer toggle to Codex Home through the Home component's original titlebar-or-below-tabs placement slot.
-- Loads the app's own `HomeComposerModeToggle` inside the live Codex React tree rather than recreating its appearance or mounting a separate overlay.
-- Drives the app's native Home router: **Chat** renders the full Chat home interface and **Work** renders the Work home interface while both stay inside the Codex product shell.
+- Adds a native-styled **Chat / Work** composer toggle to the center of the Codex titlebar.
+- Keeps the toggle in a stable standalone DOM host so Home route changes never remount or reposition it.
+- Connects the app's saved preference to the exact effective-mode subscription used by its Home route: **Chat** uses the Chat home interface, while **Work** returns to native Codex Home. It does not replace Home components or change the global product setting.
+- Applies the selection to that subscription's scoped atom read so native dependency updates notify Home even when it no longer subscribes directly to the saved preference. Restores the original reads when the route is replaced or the theme is disposed.
+- Commits mode changes synchronously and updates the selection only after the current React tree confirms the screen changed. Unsupported builds and restricted Chat access fail explicitly.
 - Leaves the toggle already rendered by ChatGPT and ChatGPT Work untouched.
-
-### ChatGPT Work file-review cards
-
-- Restores the app's own Codex file-change card at the end of every completed file-modifying response in ChatGPT Work conversations.
-- Loads the native card component and its live app providers rather than recreating the card, preserving the original typography, spacing, file grouping, diff counts, expansion control, **Undo**, and **Review** actions.
-- Leaves cards that Codex mode already renders untouched, so native cards are never duplicated.
 
 ### Task activity
 
 - Fills the complete current rounded composer surface with an animated rainbow while that task is running, without changing its corner radius or adding scrollbars.
-- Animates the full-width usage bar while any visible or collapsed project has an active task.
-- Shows the included transparent fire GIF above both thumbs for the active task. Each task keeps its own timer and grows the flames for up to five minutes.
+- Highlights the usage gauge marker while any visible or collapsed project has an active task.
+- Shows the included transparent fire GIF rising from the person's raised hands for the active task. Each task keeps its own timer and grows the flames for up to five minutes.
 - Keeps flames clipped to the chat surface and below chat text.
+
+### Queued message editing
+
+- Repairs local queued-message resubmission after the native editor removes the original queue entry. The replacement keeps its neighboring queue position and attachments.
+- Applies only to server queue IDs whose successful deletion the theme observed. Existing updates, consumed messages, remote queues, and native undo keep their normal behavior; uncertain submissions are never retried automatically.
 
 ### Sidebar information
 
 - Merges ChatGPT web projects and conversations into Codex mode's existing **Projects** and **Recents** sections without adding separate ChatGPT groups.
-- Displays remaining usage and the reset date in a compact Japanese strip directly above the current profile footer.
-- Keeps the custom usage strip out of the Settings route and separate Settings window.
+- Displays a watch-style rainbow usage gauge above the navigation rail’s Help button. The large center number is the remaining percentage; the lower left and right numbers are the reset month and day. Hover for the full reset timestamp. Unknown values show dashes.
+- Falls back to the area above the profile footer on older sidebar layouts.
+- Keeps the custom usage gauge out of the Settings route and separate Settings window.
+- Places the running-task spinner before the server name in collapsed SSH projects, keeping the latency bars at the right.
 - Replaces matching SSH host status dots with four cellular-style latency bars:
   - 4 bars: 40 ms or less
   - 3 bars: 100 ms or less
@@ -86,6 +96,8 @@ git pull --ff-only
 ```
 
 Quit the themed Codex instance before reinstalling, then reopen it from the Dock.
+When updating an older launcher, remove its old Dock pin and drag the installed
+`Codex.app` back to the same position so macOS refreshes its bundle identity.
 
 ## Run without installing
 
@@ -105,7 +117,7 @@ node codex-theme.mjs \
   --fire /absolute/path/to/fire.gif
 ```
 
-The background may be JPEG or PNG. The fire asset must be an animated GIF with transparency. The bundled fire coordinates are calibrated for the included 2662×1776 background; another photo will probably need different coordinates in `THUMB_FIRE_POINTS`.
+The background may be JPEG or PNG. The fire asset must be an animated GIF with transparency. The bundled fire coordinates are calibrated for the included 4032×3024 background; another photo may need adjusted coordinates in the standalone bundle.
 
 ## SSH signal bars
 
@@ -115,24 +127,15 @@ The launcher reads only concrete matching entries from `~/.ssh/config` for these
 VPN, Proxmox, Homelab, Oracle_seoul, Oracle_osaka, Oracle_chuncheon
 ```
 
-Those are the author's personal defaults, not a required server list. To use your own SSH hosts, edit `PINNED_SSH_ALIASES` near the top of `codex-theme.mjs`:
-
-```js
-const PINNED_SSH_ALIASES = new Set([
-  "my-server",
-  "work-server",
-  "home-server",
-]);
-```
-
-Each value must exactly match a concrete `Host` alias in `~/.ssh/config` and the corresponding server label shown in the Codex sidebar. Wildcard aliases containing `*`, `!`, or `?` are ignored. After changing the list, run `./install.sh` again so the installed copy receives the updated script. If you run `Launch Codex Theme.command` directly from the repository, simply restart it instead.
+Those are the author's personal defaults, not a required server list. Each value must match a concrete `Host` alias in `~/.ssh/config` and its Codex sidebar label. Wildcard aliases containing `*`, `!`, or `?` are ignored. The standalone bundle contains this default list.
 
 The launcher performs a TCP connection timing check against each configured host and port every 15 seconds. It does not authenticate or run SSH commands. If the configured aliases are absent, the feature simply stays hidden.
 
 ## How it works
 
-- Starts the official Codex or ChatGPT executable with Chromium's `--remote-debugging-pipe`.
-- Uses a parent-child process pipe rather than exposing a remote-debugging TCP port.
+- Starts the official Codex or ChatGPT executable through a native app launcher with Chromium's `--remote-debugging-pipe`.
+- Makes the official app responsible for its own macOS privacy requests, including requests from its audio and capture helpers. The native launcher replaces itself with the app so process lifetime and pipe ownership remain unchanged.
+- Uses inherited process pipes rather than exposing a remote-debugging TCP port. Dock launches keep the app as the parent and the theme worker as its child; terminal launches keep the terminal-owned worker as the parent.
 - Stores the separate profile in `~/Library/Application Support/Codex Theme`.
 - Attaches once to each Codex page and installs a versioned, single-instance UI runtime.
 - Uses the current app-shell, composer, and surface tokens while retaining fallbacks for older builds.
@@ -140,24 +143,47 @@ The launcher performs a TCP connection timing check against each configured host
 - Reads the canonical Codex limit from the bundled `codex app-server`, retains the app's own `/wham/usage` response as a compatibility fallback, and caches the latest result locally for up to six hours.
 - Leaves `/Applications/ChatGPT.app`, `/Applications/Codex.app`, and their `app.asar` files untouched.
 
-## Development
+## Distribution and compatibility
 
-The maintainable source lives under `src/host` and `src/page`. The checked-in
-`codex-theme.mjs` is a generated standalone bundle so normal installation does not require npm
-or anything from `node_modules`.
+The repository ships the standalone `codex-theme.mjs`, assets, installer, and
+native launcher sources/binaries. Development modules, fixtures, tests, and npm
+dependencies remain local and are not needed for installation.
 
-```sh
-npm install
-npm run build
-npm test
-npm run check
-```
+The current bundle includes compatibility fixes for app version 26.924.20706:
+scoped Chat / Work mode selection, shared-module imports, revised Home input
+controllers, navigation-rail footer placement, and the extended composer fade.
+Sidebar fallbacks support older profile-footer layouts.
 
-Run `npm run build` after changing anything under `src`. `npm run check` fails when the committed
-bundle does not exactly match the source, then performs the syntax and dry-run checks used by the
-installer workflow.
+The usage gauge reads the limiting usage window: the window with the highest
+percentage used, preferring the longer window when percentages are equal.
+Reset dates use the Mac’s local timezone. The gauge stays out of Settings and
+keeps the native Help and profile controls available.
 
 ## Troubleshooting
+
+### Repeated screen recording prompts, visualizer permission errors, or voice crashes
+
+Older launchers made the theme app responsible for the official app and its
+capture helpers. macOS could then evaluate the theme launcher's permissions and
+usage descriptions instead of the official app's. Rebuilding the ad-hoc-signed
+theme launcher could also change its code identity.
+
+Reinstall with `./install.sh`, then fully quit the themed instance and reopen it
+from `~/Applications/Codex Theme/Codex.app`. The installed `CodexAppLauncher`
+starts the official app with its own responsibility chain, preserving normal
+macOS permission checks and the existing CDP pipes. Both the app icon and the
+command-line entry point use this path. Updating only `codex-theme.mjs` is not
+sufficient for an older installation.
+
+The helper uses the macOS `responsibility_spawnattrs_setdisclaim` spawn SPI,
+resolved at runtime as in [LLDB](https://lldb.llvm.org/cpp_reference/PosixSpawnResponsible_8h_source.html).
+If the API becomes unavailable, startup fails explicitly. It does not reset or
+modify the privacy database, grant permissions, or patch the official app.
+Permissions for the official app and Codex Computer Use still need to be allowed
+in System Settings. Existing theme-launcher permission entries can remain in
+place; the installer does not remove them.
+
+### Launcher diagnostics
 
 Check the launcher log:
 

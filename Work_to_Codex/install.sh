@@ -8,6 +8,8 @@ APP_SOURCE="${SCRIPT_DIR}/Codex.app.noindex"
 APP_DESTINATION="${INSTALL_ROOT}/Codex.app"
 LAUNCHER_SOURCE="${SCRIPT_DIR}/CodexLauncher.swift"
 LAUNCHER_DESTINATION="${APP_DESTINATION}/Contents/MacOS/CodexTheme"
+APP_LAUNCHER_SOURCE="${SCRIPT_DIR}/native/launch-app.c"
+APP_LAUNCHER_DESTINATION="${APP_DESTINATION}/Contents/MacOS/CodexAppLauncher"
 
 fail() {
   print -u2 "Codex Theme install failed: $1"
@@ -22,9 +24,15 @@ if [[ ! -x /Applications/ChatGPT.app/Contents/MacOS/ChatGPT \
   fail "Install Codex or ChatGPT in /Applications first."
 fi
 
+OFFICIAL_APP="/Applications/ChatGPT.app"
+[[ -x "${OFFICIAL_APP}/Contents/MacOS/ChatGPT" ]] || OFFICIAL_APP="/Applications/Codex.app"
+OFFICIAL_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${OFFICIAL_APP}/Contents/Info.plist")"
+[[ -n "${OFFICIAL_BUNDLE_ID}" ]] || fail "The official app has no bundle identifier."
+
 for required_path in \
   "${APP_SOURCE}" \
   "${LAUNCHER_SOURCE}" \
+  "${APP_LAUNCHER_SOURCE}" \
   "${SCRIPT_DIR}/codex-theme.mjs" \
   "${SCRIPT_DIR}/image.jpg" \
   "${SCRIPT_DIR}/fire.gif"; do
@@ -37,6 +45,10 @@ mkdir -p "${INSTALL_ROOT}"
 /usr/bin/install -m 644 "${SCRIPT_DIR}/image.jpg" "${INSTALL_ROOT}/image.jpg"
 /usr/bin/install -m 644 "${SCRIPT_DIR}/fire.gif" "${INSTALL_ROOT}/fire.gif"
 
+# The executable preserves the Dock launch PID; matching the actual bundle's
+# identifier lets that running app occupy the pinned theme tile.
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${OFFICIAL_BUNDLE_ID}" "${APP_DESTINATION}/Contents/Info.plist"
+
 if command -v swiftc >/dev/null 2>&1; then
   swiftc \
     -O \
@@ -47,6 +59,15 @@ else
   bundled_architectures="$(/usr/bin/lipo -archs "${LAUNCHER_DESTINATION}" 2>/dev/null || true)"
   [[ " ${bundled_architectures} " == *" $(uname -m) "* ]] \
     || fail "Xcode Command Line Tools are required to build the launcher for $(uname -m). Run 'xcode-select --install'."
+fi
+
+if command -v clang >/dev/null 2>&1; then
+  clang -O2 -Wall -Wextra -Werror -mmacosx-version-min=12.0 \
+    "${APP_LAUNCHER_SOURCE}" -o "${APP_LAUNCHER_DESTINATION}"
+else
+  bundled_architectures="$(/usr/bin/lipo -archs "${APP_LAUNCHER_DESTINATION}" 2>/dev/null || true)"
+  [[ " ${bundled_architectures} " == *" $(uname -m) "* ]] \
+    || fail "Xcode Command Line Tools are required to build the app launcher for $(uname -m)."
 fi
 
 /usr/bin/codesign --force --deep --sign - "${APP_DESTINATION}" >/dev/null
