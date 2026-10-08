@@ -95,3 +95,54 @@ test("shared page runtime still produces valid JavaScript", () => {
   assert.doesNotThrow(() => new Function(source));
   assert.match(source, /installPageRuntime/);
 });
+
+// Exercise the shipped controller, including its CSS writes and lifecycle.
+function fireFixture({ width = 1080.5, height = 1480.25, zoom = 1, border = 0, boxSizing = "border-box" } = {}) {
+  const source = createPageSource("", "");
+  const controllerSource = source.slice(source.indexOf("  function createFireController("), source.indexOf("  // src/page/activity.mjs"));
+  const frames = [];
+  class Element {
+    constructor() {
+      this.isConnected = true; this.dataset = {}; this.children = [];
+      this.style = { setProperty: (key, value) => { this.style[key] = value; } };
+    }
+    setAttribute() {} removeAttribute() {} addEventListener() {} remove() { this.isConnected = false; }
+    prepend(child) { this.children.unshift(child); } appendChild(child) { this.children.push(child); }
+    getBoundingClientRect() {
+      const edge = this === surface ? 0 : border;
+      return { left: 80 + edge * zoom, top: 30 + edge * zoom, width: (width - edge * 2) * zoom, height: (height - edge * 2) * zoom };
+    }
+  }
+  const surface = new Element();
+  const factory = new Function("HTMLElement", "document", "findMainSurface", "markOwned", "setAttributeIfChanged", "removeAttributeIfPresent", "isVisible", "setStylePropertyIfChanged", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame", "setInterval", "clearInterval", controllerSource + "\nreturn createFireController;");
+  const create = factory(Element, { createElement: () => new Element() }, () => surface, el => el,
+    () => {}, () => {}, () => true, (el, key, value) => el.style.setProperty(key, value), el => ({
+      boxSizing: el === surface ? boxSizing : "border-box",
+      width: `${width - (el === surface && boxSizing === "border-box" ? 0 : 2 * border)}px`,
+      height: `${height - (el === surface && boxSizing === "border-box" ? 0 : 2 * border)}px`,
+      borderLeftWidth: `${border}px`, borderRightWidth: `${border}px`, borderTopWidth: `${border}px`, borderBottomWidth: `${border}px`
+    }), callback => frames.push(callback), () => {}, () => 1, () => {});
+  const controller = create({ getConfig: () => ({ fireDataUrl: "" }), diagnostics: { fireLayerCreates: 0 }, sessions: { start: () => Date.now(), end() {}, size: 1 } });
+  controller.reconcile(); controller.setActive(true, { key: "fixture" });
+  for (const frame of frames) frame();
+  return { controller, images: surface.children[0].children };
+}
+
+for (const zoom of [0.9, 1, 1.25, 1.5]) {
+  test(`fire anchors stay on wallpaper hands with ${zoom * 100}% zoom`, () => {
+    for (const options of [{ width: 1080.5, height: 1480.25 }, { width: 1800.25, height: 800.5 }, { width: 1080.5, height: 1480.25, border: 3, boxSizing: "content-box" }]) {
+      const fixture = fireFixture({ ...options, zoom });
+      const scale = Math.max(options.width / 4032, options.height / 3024);
+      for (const [index, point] of [{ x: 1200, y: 1090 }, { x: 2510, y: 1080 }].entries()) {
+        const style = fixture.images[index].style;
+        const actualX = (parseFloat(style.left) + parseFloat(style.width) / 2 + (options.border || 0)) * zoom;
+        const actualY = (parseFloat(style.top) + parseFloat(style.height) + (options.border || 0)) * zoom;
+        const expectedX = ((options.width - 4032 * scale) / 2 + point.x * scale) * zoom;
+        const expectedY = ((options.height - 3024 * scale) / 2 + point.y * scale) * zoom;
+        assert.ok(Math.abs(actualX - expectedX) < 0.16, `horizontal anchor ${actualX} != ${expectedX}`);
+        assert.ok(Math.abs(actualY - expectedY) < 0.16, `vertical anchor ${actualY} != ${expectedY}`);
+      }
+      fixture.controller.dispose();
+    }
+  });
+}
