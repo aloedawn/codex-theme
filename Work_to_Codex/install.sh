@@ -18,6 +18,8 @@ fail() {
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "macOS is required."
 command -v node >/dev/null 2>&1 || fail "Node.js is required and must be available as 'node'."
+node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' \
+  || fail "Node.js 20 or later is required."
 
 if [[ ! -x /Applications/ChatGPT.app/Contents/MacOS/ChatGPT \
   && ! -x /Applications/Codex.app/Contents/MacOS/Codex ]]; then
@@ -45,30 +47,35 @@ mkdir -p "${INSTALL_ROOT}"
 /usr/bin/install -m 644 "${SCRIPT_DIR}/image.jpg" "${INSTALL_ROOT}/image.jpg"
 /usr/bin/install -m 644 "${SCRIPT_DIR}/fire.gif" "${INSTALL_ROOT}/fire.gif"
 
-# The executable preserves the Dock launch PID; matching the actual bundle's
-# identifier lets that running app occupy the pinned theme tile.
+# The launcher registers its own bundle before preserving the Dock launch PID.
+# Keep the shared bundle identifier consistent with the official executable.
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${OFFICIAL_BUNDLE_ID}" "${APP_DESTINATION}/Contents/Info.plist"
 
-if command -v swiftc >/dev/null 2>&1; then
+# The release binaries contain both Apple Silicon and Intel slices. A compiler
+# is needed only if a future architecture is absent from the bundled launchers.
+bundled_architectures="$(/usr/bin/lipo -archs "${LAUNCHER_DESTINATION}" 2>/dev/null || true)"
+if [[ " ${bundled_architectures} " != *" $(uname -m) "* ]]; then
+  command -v swiftc >/dev/null 2>&1 \
+    || fail "Xcode Command Line Tools are required for $(uname -m). Run 'xcode-select --install'."
   swiftc \
     -O \
     -target "$(uname -m)-apple-macosx12.0" \
     "${LAUNCHER_SOURCE}" \
     -o "${LAUNCHER_DESTINATION}"
-else
-  bundled_architectures="$(/usr/bin/lipo -archs "${LAUNCHER_DESTINATION}" 2>/dev/null || true)"
-  [[ " ${bundled_architectures} " == *" $(uname -m) "* ]] \
-    || fail "Xcode Command Line Tools are required to build the launcher for $(uname -m). Run 'xcode-select --install'."
 fi
 
-if command -v clang >/dev/null 2>&1; then
+bundled_architectures="$(/usr/bin/lipo -archs "${APP_LAUNCHER_DESTINATION}" 2>/dev/null || true)"
+if [[ " ${bundled_architectures} " != *" $(uname -m) "* ]]; then
+  command -v clang >/dev/null 2>&1 \
+    || fail "Xcode Command Line Tools are required for $(uname -m)."
   clang -O2 -Wall -Wextra -Werror -mmacosx-version-min=12.0 \
     "${APP_LAUNCHER_SOURCE}" -o "${APP_LAUNCHER_DESTINATION}"
-else
-  bundled_architectures="$(/usr/bin/lipo -archs "${APP_LAUNCHER_DESTINATION}" 2>/dev/null || true)"
-  [[ " ${bundled_architectures} " == *" $(uname -m) "* ]] \
-    || fail "Xcode Command Line Tools are required to build the app launcher for $(uname -m)."
 fi
+
+"${LAUNCHER_DESTINATION}" --check >/dev/null \
+  || fail "The theme launcher is incompatible with this Mac."
+"${APP_LAUNCHER_DESTINATION}" --check >/dev/null \
+  || fail "The app launcher is incompatible with this Mac."
 
 /usr/bin/codesign --force --deep --sign - "${APP_DESTINATION}" >/dev/null
 

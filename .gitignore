@@ -1,6 +1,7 @@
 # Distribution allowlist. Development sources and tests stay local.
 *
 !/.gitignore
+!/.gitattributes
 !/README.md
 !/install.sh
 !/Launch Codex Theme.command

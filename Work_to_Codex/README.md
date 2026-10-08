@@ -11,29 +11,32 @@ The included [`image.jpg`](image.jpg) and [`fire.gif`](fire.gif) reproduce the a
 
 ### macOS launcher and Dock
 
-- Replaces the original Dock launch process with the signed app, so it completes the launch instead of leaving a waiting launcher icon.
-- Uses the installed app's bundle identifier so the pinned theme tile and the running app have the same Dock identity. The tile's launch URL continues to point to the theme launcher.
+- Registers the theme bundle with AppKit and completes its launch before replacing the process with the signed app. This preserves the pinned Codex tile's bundle path and name and completes its launch animation.
+- Keeps the installed app's bundle identifier while retaining the theme launcher's Dock identity. Matching the identifier alone does not prevent a separate ChatGPT tile; registration must happen before the executable handoff.
 - Runs the theme worker in the background with inherited debugging pipes; the worker exits when the app closes those pipes.
 - Preserves the official app's separate privacy-permission identity and signature.
 
 ### Chat surface
 
-- Shows `image.jpg` behind the active chat surface with a 60% dark overlay while retaining the native translucent sidebar material.
+- Shows `image.jpg` behind the active chat surface with a 60% dark overlay, alongside a solid `#583FC4` project/chat sidebar with light text and darker hover/selection highlights. The narrow navigation rail retains its native appearance.
 - Removes the native top and bottom surface fades so the wallpaper keeps one uniform dimming level from edge to edge.
 - Applies translucent colors to the current input, dropdown, secondary, and code surfaces while preserving the app's native layout and controls.
 
 ### Codex Home Chat / Work toggle
 
-- Adds a native-styled **Chat / Work** composer toggle to the center of the Codex titlebar.
+- Adds a native-styled **Chat / Work** composer toggle to the center of the Codex titlebar only on new-chat screens. Opening an existing session removes it and restores its mode bridge.
 - Keeps the toggle in a stable standalone DOM host so Home route changes never remount or reposition it.
 - Connects the app's saved preference to the exact effective-mode subscription used by its Home route: **Chat** uses the Chat home interface, while **Work** returns to native Codex Home. It does not replace Home components or change the global product setting.
 - Applies the selection to that subscription's scoped atom read so native dependency updates notify Home even when it no longer subscribes directly to the saved preference. Restores the original reads when the route is replaced or the theme is disposed.
 - Commits mode changes synchronously and updates the selection only after the current React tree confirms the screen changed. Unsupported builds and restricted Chat access fail explicitly.
+- Tracks the native mode owner when seat-enabled Chat replaces the shared composer Home. A stalled switch unlocks the buttons after two seconds without waiting for another UI update.
+- Prefers live mode properties and the Home scope's exact subscription over component source signatures. Added wrappers, moved hooks, renamed setter arguments, and bundle formatting changes can be handled without a version-specific patch.
+- Checks compatibility before patching subscriptions. If native internals are unsupported or ambiguous, it removes its own toggle and restores its owned hooks so the native interface remains available. Runtime diagnostics report the compatibility state and detection method.
 - Leaves the toggle already rendered by ChatGPT and ChatGPT Work untouched.
 
 ### Task activity
 
-- Fills the complete current rounded composer surface with an animated rainbow while that task is running, without changing its corner radius or adding scrollbars.
+- Outlines the current composer with a 2 px animated rainbow border while that task is running, following its native rounded corners and leaving the input background unchanged. The border fades out when the task finishes.
 - Highlights the usage gauge marker while any visible or collapsed project has an active task.
 - Shows the included transparent fire GIF rising from the person's raised hands for the active task. Each task keeps its own timer and grows the flames for up to five minutes.
 - Keeps flames clipped to the chat surface and below chat text.
@@ -47,7 +50,6 @@ The included [`image.jpg`](image.jpg) and [`fire.gif`](fire.gif) reproduce the a
 
 - Merges ChatGPT web projects and conversations into Codex mode's existing **Projects** and **Recents** sections without adding separate ChatGPT groups.
 - Displays a watch-style rainbow usage gauge above the navigation rail’s Help button. The large center number is the remaining percentage; the lower left and right numbers are the reset month and day. Hover for the full reset timestamp. Unknown values show dashes.
-- Falls back to the area above the profile footer on older sidebar layouts.
 - Keeps the custom usage gauge out of the Settings route and separate Settings window.
 - Places the running-task spinner before the server name in collapsed SSH projects, keeping the latency bars at the right.
 - Replaces matching SSH host status dots with four cellular-style latency bars:
@@ -61,10 +63,14 @@ The included [`image.jpg`](image.jpg) and [`fire.gif`](fire.gif) reproduce the a
 
 - macOS 12 or later
 - [Codex desktop](https://openai.com/codex/) or ChatGPT installed in `/Applications`
-- Node.js available as `node`
-- Xcode Command Line Tools recommended so the installer can build the launcher for the current Mac
+- Node.js 20 or later available as `node`
 
-The checked-in launcher binary is for Apple Silicon. The installer recompiles it for the current architecture when `swiftc` is available.
+Both checked-in launchers are universal binaries for Apple Silicon and Intel.
+Installation uses the bundled binaries without Xcode Command Line Tools. The
+installer can compile the included native sources if a future architecture is
+missing from the bundle. The official app's own system requirements also apply.
+
+This distribution supports macOS only. Windows adaptation is handled separately.
 
 ## Install
 
@@ -138,21 +144,45 @@ The launcher performs a TCP connection timing check against each configured host
 - Uses inherited process pipes rather than exposing a remote-debugging TCP port. Dock launches keep the app as the parent and the theme worker as its child; terminal launches keep the terminal-owned worker as the parent.
 - Stores the separate profile in `~/Library/Application Support/Codex Theme`.
 - Attaches once to each Codex page and installs a versioned, single-instance UI runtime.
-- Uses the current app-shell, composer, and surface tokens while retaining fallbacks for older builds.
+- Uses the current app-shell, composer, navigation rail, and surface tokens.
 - Keeps animation nodes alive across activity fades and updates DOM only when state actually changes.
 - Reads the canonical Codex limit from the bundled `codex app-server`, retains the app's own `/wham/usage` response as a compatibility fallback, and caches the latest result locally for up to six hours.
 - Leaves `/Applications/ChatGPT.app`, `/Applications/Codex.app`, and their `app.asar` files untouched.
 
 ## Distribution and compatibility
 
+App version 26.928.20755 restarts at startup to match its in-app browser policy.
+For installations where that feature is disabled, both launch paths now pass
+`--codex-browser-background-networking-disabled` immediately. This avoids a native
+restart that discards the theme profile and debugging pipes. This startup default
+assumes the in-app browser remains disabled.
+
 The repository ships the standalone `codex-theme.mjs`, assets, installer, and
 native launcher sources/binaries. Development modules, fixtures, tests, and npm
 dependencies remain local and are not needed for installation.
+No login data, profile contents, SSH configuration, usage cache, or machine-specific
+absolute checkout paths are shipped. On another Mac, install the official app and
+Node.js, clone this repository, run the installer, then sign in to the separate
+theme profile. The bundled assets are included.
 
-The current bundle includes compatibility fixes for app version 26.924.20706:
-scoped Chat / Work mode selection, shared-module imports, revised Home input
-controllers, navigation-rail footer placement, and the extended composer fade.
-Sidebar fallbacks support older profile-footer layouts.
+The current Home adapter is tested against captured app version 26.930.41038
+exports and components, including switching into the seat-enabled Chat Home and
+back to Work. Live UI verification after restarting the app remains required.
+It uses scoped
+Chat / Work mode selection, shared-module imports, native Home input controllers,
+navigation-rail gauge placement, and the split composer scrim. Older Home-mode
+setters, embedded ReactDOM discovery, profile-footer gauge placement, and the
+root-level usage CLI path are no longer supported. The Chat / Work bridge resolves
+the primitive wrapper around the current keyed mode selector so the tabs can mount
+on the new Home route. It also adapts the wrapper’s scoped, read-only mode
+dependency so cached Work values notify React when a tab requests Chat. The
+original reads are restored when the bridge closes.
+
+Compatibility detection runs when a new-chat screen is reconciled. The local
+regression suite covers captured native builds plus simulated component renames,
+inserted wrappers, moved subscription hooks, changed dependency ordering, and
+reformatted or renamed module bindings. This reduces routine update breakage;
+changes to the underlying Home mode contract can still require an adapter update.
 
 The usage gauge reads the limiting usage window: the window with the highest
 percentage used, preferring the longer window when percentages are equal.
@@ -164,8 +194,8 @@ Usage refreshes at launch and every 60 seconds through the app's bundled Codex
 CLI. The theme starts a separate usage-only app-server process for each check
 and terminates it as soon as the check succeeds or fails, releasing its memory
 between checks. This adds a brief CLI startup to each refresh; it does not stop
-the app's own task-running server. Both the newer `Resources/codex-cli/bin/codex`
-layout and the older `Resources/codex` layout are supported. The launcher logs the selected CLI path;
+the app's own task-running server. The packaged `Resources/codex-cli/bin/codex` shim and its nested
+`CodexCLI.app` executable are supported. The launcher logs the selected CLI path;
 an unavailable CLI is reported explicitly instead of silently disabling polling.
 
 ## Troubleshooting

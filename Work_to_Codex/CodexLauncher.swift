@@ -1,7 +1,7 @@
-import Foundation
+import AppKit
 
 if CommandLine.arguments.dropFirst().first == "--check" {
-    print("codex-theme-launcher 3")
+    print("codex-theme-launcher 4")
     exit(0)
 }
 
@@ -28,8 +28,15 @@ dup2(log, STDERR_FILENO)
 if log > STDERR_FILENO { close(log) }
 let profile = files.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Codex Theme")
 let arguments = [helper.path, "--gui", node, script.path, app,
+    // Match the disabled in-app browser policy at native startup. The new
+    // framework's policy relaunch drops the theme profile and debugging pipes.
+    "--codex-browser-background-networking-disabled",
     "--remote-debugging-pipe", "--user-data-dir=\(profile.path)", "--no-first-run"]
 let argv = arguments.map { strdup($0) } + [nil]
+// Register this bundle before exec. Otherwise the signed app's first AppKit
+// check-in replaces the pinned launcher's Dock identity with its own path.
+// Finish the original launch so its tile also stops the launch animation.
+NSApplication.shared.finishLaunching()
 // Preserve the original Dock-launched PID all the way into the signed app.
 // The helper forks only the background theme worker, then execs the app here.
 _ = argv.withUnsafeBufferPointer { buffer in

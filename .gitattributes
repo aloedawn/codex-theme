@@ -1,0 +1,12 @@
+* text=auto
+*.sh text eol=lf
+*.command text eol=lf
+*.mjs text eol=lf
+*.swift text eol=lf
+*.c text eol=lf
+*.md text eol=lf
+*.plist text eol=lf
+*.jpg binary
+*.gif binary
+*.icns binary
+Work_to_Codex/Codex.app.noindex/Contents/MacOS/* binary
