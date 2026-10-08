@@ -12,6 +12,14 @@ show the reset month and day. Hover for the full reset date and time.
 
 ### Windows (preview)
 
+Fully quit the regular Codex/ChatGPT app before launching the theme, and use
+only the themed app while remote control is enabled. The two profiles share
+the same Codex installation ID; running both can produce HTTP 409
+(`Remote app server already online`) and make the remote-control switch turn
+off. The Store launcher refuses a second instance to prevent this conflict.
+If both are already running, turn off remote control in the regular app (or
+quit it after its tasks finish), then enable it in the themed app.
+
 Requires the official Windows Codex/ChatGPT desktop app and Node.js 22 or later. Microsoft Store apps launch through Windows package activation so their updater retains the package identity. The theme connects through a loopback-only CDP WebSocket. Fully quit the app before switching from an older launcher.
 Microsoft Store packages and ordinary desktop installations are detected on
 each launch. No administrator access or app-bundle patch is required.

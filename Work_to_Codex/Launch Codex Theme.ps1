@@ -31,7 +31,7 @@ if ($Console) {
 }
 $logDirectory = Join-Path $PSScriptRoot 'logs'
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
-# Unique logs also allow the app's own profile lock to handle double launches.
+# Keep separate logs for each launch attempt.
 $logId = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $stdoutPath = Join-Path $logDirectory "$logId.log"
 $stderrPath = Join-Path $logDirectory "$logId-error.log"
@@ -40,6 +40,11 @@ $worker = Start-Process -FilePath $nodePath -ArgumentList (($arguments | ForEach
 Start-Sleep -Milliseconds 2000
 $worker.Refresh()
 if ($worker.HasExited -and $worker.ExitCode -ne 0) {
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.MessageBox]::Show(
+        "Codex Theme did not start. If Codex/ChatGPT is already open, finish its tasks and fully quit it before launching the theme. Running both apps can prevent remote control from connecting.`n`nDetails: $stderrPath",
+        'Codex Theme', 'OK', 'Warning'
+    ) | Out-Null
     throw "Codex Theme did not start. See $stderrPath"
 }
 Write-Output "Codex Theme worker: $($worker.Id). Logs: $stdoutPath"

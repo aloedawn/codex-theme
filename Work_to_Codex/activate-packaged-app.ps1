@@ -2,7 +2,8 @@
 param(
     [string]$AppExecutable,
     [string]$ArgumentsJson,
-    [int]$InspectProcessId
+    [int]$InspectProcessId,
+    [switch]$CheckRunningOnly
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
@@ -56,6 +57,17 @@ $taskPackage = Get-AppxPackage | Where-Object {
     $taskExecutable.StartsWith($_.InstallLocation.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
 } | Select-Object -First 1
 if (-not $taskPackage) { throw 'The selected app is not a registered OpenAI Windows package.' }
+# Separate Chromium profiles still share the Codex installation ID. A second
+# app-server cannot register remote control while the first one owns it (409).
+$taskRunningApps = @(Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe' OR Name='Codex.exe'" | Where-Object {
+    $_.CommandLine -notmatch '(?:^|\s)--type=' -and
+    $_.ExecutablePath -and
+    $_.ExecutablePath.StartsWith($taskPackage.InstallLocation.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
+})
+if ($taskRunningApps.Count -gt 0) {
+    throw 'Codex/ChatGPT is already running. After its tasks finish, fully quit it before starting Codex Theme. Running both apps causes remote control to fail with HTTP 409 (Remote app server already online).'
+}
+if ($CheckRunningOnly) { return }
 [xml]$taskManifest = Get-Content -LiteralPath (Join-Path $taskPackage.InstallLocation 'AppxManifest.xml') -Raw
 $taskApplication = @($taskManifest.Package.Applications.Application) | Where-Object {
     $_.Executable -and [IO.Path]::GetFullPath((Join-Path $taskPackage.InstallLocation $_.Executable)) -eq $taskExecutable
