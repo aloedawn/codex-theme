@@ -12,7 +12,7 @@ show the reset month and day. Hover for the full reset date and time.
 
 ### Windows (preview)
 
-Requires the official Windows Codex/ChatGPT desktop app and Node.js 20 or later.
+Requires the official Windows Codex/ChatGPT desktop app and Node.js 22 or later. Microsoft Store apps launch through Windows package activation so their updater retains the package identity. The theme connects through a loopback-only CDP WebSocket. Fully quit the app before switching from an older launcher.
 Microsoft Store packages and ordinary desktop installations are detected on
 each launch. No administrator access or app-bundle patch is required.
 

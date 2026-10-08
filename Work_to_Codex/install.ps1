@@ -9,12 +9,12 @@ $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'This installer requires Windows.' }
 if (-not $NodeExecutable) { $NodeExecutable = (Get-Command node.exe -ErrorAction Stop).Source }
 $NodeExecutable = (Resolve-Path -LiteralPath $NodeExecutable).Path
-& $NodeExecutable -e 'process.exit(parseInt(process.versions.node)>=20?0:1)'
-if ($LASTEXITCODE -ne 0) { throw 'Node.js 20 or later is required.' }
+& $NodeExecutable -e 'process.exit(parseInt(process.versions.node)>=22?0:1)'
+if ($LASTEXITCODE -ne 0) { throw 'Node.js 22 or later is required.' }
 $InstallDirectory = [IO.Path]::GetFullPath($InstallDirectory)
 $runtimeDirectory = Join-Path $InstallDirectory 'runtime'
 $profileDirectory = Join-Path $InstallDirectory 'profile'
-$requiredFiles = @('codex-theme.mjs', 'windows-host.mjs', 'image.jpg', 'fire.gif', 'Launch Codex Theme.ps1', 'Launch Codex Theme.cmd')
+$requiredFiles = @('codex-theme.mjs', 'windows-host.mjs', 'windows-packaged-launch.mjs', 'activate-packaged-app.ps1', 'image.jpg', 'fire.gif', 'Launch Codex Theme.ps1', 'Launch Codex Theme.cmd')
 foreach ($file in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $file) -PathType Leaf)) { throw "Missing file: $file" }
 }

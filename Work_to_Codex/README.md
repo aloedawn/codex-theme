@@ -70,7 +70,7 @@ Installation uses the bundled binaries without Xcode Command Line Tools. The
 installer can compile the included native sources if a future architecture is
 missing from the bundle. The official app's own system requirements also apply.
 
-Windows preview requirements and installation are documented in the [root README](../README.md#windows-preview). Use `install.ps1` on Windows; the native macOS launchers are not used there. The Windows runtime detects Microsoft Store packages on each launch, uses a separate per-user profile, and transports CDP messages over inherited pipes. GUI verification must run outside restricted agent sessions that deny app activation.
+Windows preview requirements and installation are documented in the [root README](../README.md#windows-preview). Use `install.ps1` on Windows; the native macOS launchers are not used there. The Windows runtime detects Microsoft Store packages on each launch, uses a separate per-user profile, and launches Store apps through Windows package activation to preserve their updater identity. It requires Node.js 22 or later on Windows and connects the theme over a loopback-only CDP WebSocket. GUI verification must run outside restricted agent sessions that deny app activation.
 
 ## Install
 

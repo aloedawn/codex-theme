@@ -17,6 +17,8 @@
 !Work_to_Codex/Launch Codex Theme.ps1
 !Work_to_Codex/Launch Codex Theme.cmd
 !Work_to_Codex/windows-host.mjs
+!Work_to_Codex/windows-packaged-launch.mjs
+!Work_to_Codex/activate-packaged-app.ps1
 !Work_to_Codex/tests/
 !Work_to_Codex/tests/*.test.mjs
 !Work_to_Codex/Launch Codex Theme.command

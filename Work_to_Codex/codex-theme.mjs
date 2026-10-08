@@ -7,6 +7,7 @@ import path3 from "node:path";
 import { fileURLToPath } from "node:url";
 // Keep macOS's standalone bundle independent of the Windows sidecar.
 var windowsHost = process.platform === "win32" ? await import("./windows-host.mjs") : null;
+var windowsPackageLauncher = process.platform === "win32" ? await import("./windows-packaged-launch.mjs") : null;
 
 // src/host/rate-limit-client.mjs
 import { spawn } from "node:child_process";
@@ -1437,7 +1438,9 @@ async function main() {
   });
   const childEnvironment = { ...process.env };
   if (options.skipRemoteSshBoot) childEnvironment.CODEX_SSH_SKIP_APP_SERVER_BOOT = "true";
-  const child = options.attachedAppPid != null ? new AttachedApp(options.attachedAppPid) : spawn2(
+  const child = windowsPackageLauncher?.isWindowsPackageExecutable(appExecutable)
+    ? await windowsPackageLauncher.launchWindowsPackagedApp(appExecutable, options.profilePath, childEnvironment)
+    : options.attachedAppPid != null ? new AttachedApp(options.attachedAppPid) : spawn2(
     appLauncher,
     [
       ...(windowsHost ? [] : [appExecutable]),
@@ -1680,7 +1683,7 @@ async function main() {
     }
     void refreshLatencies();
     session.setInterval(refreshLatencies, LATENCY_REFRESH_MS);
-    console.log("[wallpaper] 실행기를 닫으면 이 전용 Codex 인스턴스도 함께 종료됩니다.");
+    console.log(child.attached ? "[wallpaper] 앱을 종료하면 테마 연결도 종료됩니다." : "[wallpaper] 실행기를 닫으면 이 전용 Codex 인스턴스도 함께 종료됩니다.");
   });
 }
 export { parseArguments, CdpPipe, ThemeSession, AppServerRateLimitClient, createPageSource };
