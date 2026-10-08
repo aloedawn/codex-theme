@@ -5,6 +5,8 @@ import { spawn as spawn2 } from "node:child_process";
 import fs4 from "node:fs";
 import path3 from "node:path";
 import { fileURLToPath } from "node:url";
+// Keep macOS's standalone bundle independent of the Windows sidecar.
+var windowsHost = process.platform === "win32" ? await import("./windows-host.mjs") : null;
 
 // src/host/rate-limit-client.mjs
 import { spawn } from "node:child_process";
@@ -14,7 +16,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-var DEFAULT_PROFILE_PATH = path.join(
+var DEFAULT_PROFILE_PATH = windowsHost?.windowsPaths().profile ?? path.join(
   os.homedir(),
   "Library",
   "Application Support",
@@ -40,6 +42,7 @@ function parseArguments(argv, projectPath2) {
     imagePath: path.join(projectPath2, "image.jpg"),
     firePath: path.join(projectPath2, "fire.gif"),
     profilePath: DEFAULT_PROFILE_PATH,
+    appPath: void 0,
     skipRemoteSshBoot: false,
     dryRun: false,
     screenshotPath: void 0,
@@ -49,7 +52,13 @@ function parseArguments(argv, projectPath2) {
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === "--attach-app") {
+    if (["--app", "--image", "--fire", "--profile", "--screenshot", "--attach-app"].includes(argument) &&
+        (!argv[index + 1] || argv[index + 1].startsWith("--"))) {
+      throw new Error(`Missing value for ${argument}`);
+    }
+    if (argument === "--app") {
+      options.appPath = path.resolve(argv[++index]);
+    } else if (argument === "--attach-app") {
       options.attachedAppPid = Number(argv[++index]);
       if (!Number.isSafeInteger(options.attachedAppPid) || options.attachedAppPid < 2) {
         throw new Error("Invalid attached app PID");
@@ -85,6 +94,7 @@ function printHelp() {
   node codex-theme.mjs [옵션]
 
 옵션:
+  --app <경로>                Codex/ChatGPT 실행 파일 (자동 탐지 대신 지정)
   --image <경로>              배경 JPEG/PNG 경로
   --fire <경로>               투명 불꽃 GIF 경로
   --profile <경로>            전용 Electron 프로필 경로
@@ -95,10 +105,13 @@ function printHelp() {
   --inspect-ui                검증용: 테마 런타임과 사이드바 상태 출력
   -h, --help                  도움말 표시`);
 }
-function findAppExecutable() {
+function findAppExecutable(explicit) {
+  if (windowsHost) return windowsHost.findWindowsAppExecutable(explicit);
+  if (explicit) return fs.existsSync(explicit) ? explicit : null;
   return APP_CANDIDATES.find((candidate) => fs.existsSync(candidate));
 }
 function findCodexExecutable(appExecutable) {
+  if (windowsHost) return windowsHost.findWindowsCodexExecutable(appExecutable);
   const resources = path.resolve(path.dirname(appExecutable), "..", "Resources");
   return [
     path.join(resources, "codex-cli", "bin", "codex"),
@@ -309,7 +322,7 @@ var AppServerRateLimitClient = class {
     const child = this.spawnProcess(
       this.executablePath,
       ["app-server", "--listen", "stdio://"],
-      { stdio: ["pipe", "pipe", "pipe"] }
+      { stdio: ["pipe", "pipe", "pipe"], windowsHide: true }
     );
     this.child = child;
     this.stdoutBuffer = "";
@@ -1390,13 +1403,19 @@ async function main() {
     printHelp();
     return;
   }
-  const appExecutable = findAppExecutable();
+  if (!["darwin", "win32"].includes(process.platform)) {
+    throw new Error("Codex Theme supports macOS and Windows.");
+  }
+  if (windowsHost && options.attachedAppPid != null) {
+    throw new Error("--attach-app is available only with the native macOS launcher.");
+  }
+  const appExecutable = findAppExecutable(options.appPath);
   if (!appExecutable) {
-    throw new Error("/Applications에서 ChatGPT 또는 Codex 앱을 찾지 못했습니다.");
+    throw new Error(windowsHost ? "Codex/ChatGPT was not found. Install the official app or pass --app <path-to-exe>." : "/Applications에서 ChatGPT 또는 Codex 앱을 찾지 못했습니다.");
   }
   validateAssets(options);
-  const appLauncher = findAppLauncher(projectPath);
-  validateAppLauncher(appLauncher);
+  const appLauncher = windowsHost ? appExecutable : findAppLauncher(projectPath);
+  if (!windowsHost) validateAppLauncher(appLauncher);
   const codexExecutable = findCodexExecutable(appExecutable);
   const usageClient = codexExecutable != null ? new AppServerRateLimitClient(codexExecutable) : null;
   console.log(`[wallpaper] 사진: ${options.imagePath}`);
@@ -1421,7 +1440,7 @@ async function main() {
   const child = options.attachedAppPid != null ? new AttachedApp(options.attachedAppPid) : spawn2(
     appLauncher,
     [
-      appExecutable,
+      ...(windowsHost ? [] : [appExecutable]),
       // Avoid a native policy relaunch that loses the profile/debugging pipes.
       "--codex-browser-background-networking-disabled",
       "--remote-debugging-pipe",
@@ -1430,6 +1449,8 @@ async function main() {
     ],
     {
       env: childEnvironment,
+      cwd: windowsHost ? path3.dirname(appExecutable) : void 0,
+      windowsHide: true,
       stdio: ["ignore", "ignore", "inherit", "pipe", "pipe"]
     }
   );
@@ -1662,7 +1683,10 @@ async function main() {
     console.log("[wallpaper] 실행기를 닫으면 이 전용 Codex 인스턴스도 함께 종료됩니다.");
   });
 }
-main().catch((error) => {
-  console.error(`[wallpaper] ${error.message}`);
-  process.exitCode = 1;
-});
+export { parseArguments, CdpPipe, ThemeSession, AppServerRateLimitClient, createPageSource };
+if (process.argv[1] && fs4.realpathSync(process.argv[1]) === fs4.realpathSync(fileURLToPath(import.meta.url))) {
+  main().catch((error) => {
+    console.error(`[wallpaper] ${error.message}`);
+    process.exitCode = 1;
+  });
+}

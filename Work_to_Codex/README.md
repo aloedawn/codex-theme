@@ -1,6 +1,6 @@
 # Codex Theme — Work to Codex
 
-An unofficial macOS launcher that gives the unified Codex/ChatGPT desktop app a custom photo background, animated activity effects, compact usage information, and SSH connection indicators—without modifying the official app bundle or `app.asar`.
+An unofficial macOS launcher, with a Windows preview, that gives the unified Codex/ChatGPT desktop app a custom photo background, animated activity effects, compact usage information, and SSH connection indicators—without modifying the official app bundle or `app.asar`.
 
 The included [`image.jpg`](image.jpg) and [`fire.gif`](fire.gif) reproduce the author's current setup.
 
@@ -70,7 +70,7 @@ Installation uses the bundled binaries without Xcode Command Line Tools. The
 installer can compile the included native sources if a future architecture is
 missing from the bundle. The official app's own system requirements also apply.
 
-This distribution supports macOS only. Windows adaptation is handled separately.
+Windows preview requirements and installation are documented in the [root README](../README.md#windows-preview). Use `install.ps1` on Windows; the native macOS launchers are not used there. The Windows runtime detects Microsoft Store packages on each launch, uses a separate per-user profile, and transports CDP messages over inherited pipes. GUI verification must run outside restricted agent sessions that deny app activation.
 
 ## Install
 
@@ -223,6 +223,13 @@ in System Settings. Existing theme-launcher permission entries can remain in
 place; the installer does not remove them.
 
 ### Launcher diagnostics
+
+On Windows, inspect `runtime\logs\*-error.log` in the theme installation and
+run `runtime\Launch Codex Theme.ps1 -Console` for live output. `--app` overrides
+automatic detection; `--profile` selects an alternative dedicated profile.
+Never point it at an official app profile that is already in use. If startup
+is denied inside an agent sandbox, open the installed Start menu shortcut from
+the ordinary desktop. The host tests do not require a running GUI.
 
 Check the launcher log:
 

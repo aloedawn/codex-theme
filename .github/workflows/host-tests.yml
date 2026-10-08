@@ -1,0 +1,27 @@
+name: Theme host tests
+on: [push, pull_request]
+jobs:
+  host:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+        node: [20, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --check Work_to_Codex/codex-theme.mjs
+      - run: node --test Work_to_Codex/tests/windows.test.mjs
+      - name: Parse Windows scripts
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $scripts = Get-ChildItem -Path *.ps1, Work_to_Codex/*.ps1
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors) { throw ($errors | Out-String) }
+          }

@@ -4,10 +4,21 @@
 !/.gitattributes
 !/README.md
 !/install.sh
+!/install.ps1
+!/Launch Codex Theme.cmd
+!/.github/
+!/.github/workflows/
+!/.github/workflows/host-tests.yml
 !/Launch Codex Theme.command
 !Work_to_Codex/
 !Work_to_Codex/README.md
 !Work_to_Codex/install.sh
+!Work_to_Codex/install.ps1
+!Work_to_Codex/Launch Codex Theme.ps1
+!Work_to_Codex/Launch Codex Theme.cmd
+!Work_to_Codex/windows-host.mjs
+!Work_to_Codex/tests/
+!Work_to_Codex/tests/*.test.mjs
 !Work_to_Codex/Launch Codex Theme.command
 !Work_to_Codex/CodexLauncher.swift
 !Work_to_Codex/codex-theme.mjs
