@@ -15,6 +15,14 @@ $settingsPath = Join-Path $PSScriptRoot 'windows-settings.json'
 $settings = if (Test-Path -LiteralPath $settingsPath) {
     Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
 } else { $null }
+if ($settings -and $settings.SourceProfileDirectory) {
+    try { & (Join-Path $PSScriptRoot 'migrate-profile.ps1') -SettingsPath $settingsPath }
+    catch {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Codex Theme', 'OK', 'Warning') | Out-Null
+        throw
+    }
+}
 $nodePath = if ($settings -and $settings.NodeExecutable -and (Test-Path -LiteralPath $settings.NodeExecutable)) {
     $settings.NodeExecutable
 } else { (Get-Command node.exe -ErrorAction Stop).Source }

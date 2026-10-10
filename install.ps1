@@ -1,8 +1,9 @@
 [CmdletBinding()]
 param(
-    [string]$InstallDirectory = (Join-Path $env:LOCALAPPDATA 'Codex Theme'),
+    [string]$InstallDirectory = (Join-Path $env:LOCALAPPDATA 'Programs\Codex Theme'),
     [string]$AppExecutable,
     [string]$NodeExecutable,
+    [string]$SourceProfileDirectory,
     [switch]$NoShortcut
 )
 $ErrorActionPreference = 'Stop'

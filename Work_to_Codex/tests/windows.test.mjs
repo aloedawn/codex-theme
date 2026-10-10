@@ -20,7 +20,7 @@ function hexDump(target) {
 }
 
 test("profile is per-user and overrides the macOS default on Windows", () => {
-  assert.equal(windowsPaths({ LOCALAPPDATA: "D:/User/Local" }).profile, path.join("D:/User/Local", "Codex Theme", "profile"));
+  assert.equal(windowsPaths({ LOCALAPPDATA: "D:/User/Local" }).profile, path.join("D:/User/Local", "Programs", "Codex Theme", "profile"));
   assert.equal(windowsPaths({}, "D:/User").local, path.join("D:/User", "AppData", "Local"));
 });
 test("APPEXECLINK hex parsing works independently of localized headings", () => {

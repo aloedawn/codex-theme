@@ -31,10 +31,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 Open **Codex Theme** from the Start menu. The installer stores the runtime in
-`%LOCALAPPDATA%\Codex Theme\runtime` and uses a separate profile in
-`%LOCALAPPDATA%\Codex Theme\profile`. Sign in on first launch. The PowerShell
-launcher runs its Node worker without a console window and records logs under
+`%LOCALAPPDATA%\Programs\Codex Theme\runtime` and uses a separate profile in
+`%LOCALAPPDATA%\Programs\Codex Theme\profile`. Sign in on first launch. The PowerShell
+installer includes its own Node executable. The launcher runs its worker without a console window and records logs under
 `runtime\logs`. Closing the themed app also closes its worker.
+The installation is independent of the source checkout, so deleting the checkout
+will not remove the installed launcher. To relocate an existing profile, pass
+`-SourceProfileDirectory 'C:\path\to\old\profile'` to the installer. It copies
+login and sidebar state, preserves the old profile, and synchronizes again once
+the old app closes. The new launcher completes any pending migration before
+starting the app.
 
 For a portable installation or a nonstandard app location:
 

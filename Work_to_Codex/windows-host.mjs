@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 
 export function windowsPaths(env = process.env, home = os.homedir()) {
   const local = env.LOCALAPPDATA || path.join(home, "AppData", "Local");
-  const root = path.join(local, "Codex Theme");
+  const root = path.join(local, "Programs", "Codex Theme");
   return { root, profile: path.join(root, "profile"), local };
 }
 
