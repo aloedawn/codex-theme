@@ -25,6 +25,37 @@ if ($AppExecutable) { $checkArguments += @('--app', $AppExecutable) }
 & $NodeExecutable @checkArguments
 if ($LASTEXITCODE -ne 0) { throw 'App or theme validation failed; installation was not changed.' }
 New-Item -ItemType Directory -Path $runtimeDirectory -Force | Out-Null
+# A packaged caller can redirect new LocalAppData files into its private cache.
+# Probe a new file: an existing directory can resolve to the real path while
+# writes inside it are still redirected away from Explorer and shortcuts.
+if (-not ('CodexThemeInstallationPath' -as [type])) {
+    Add-Type @"
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+using System.Runtime.InteropServices;
+public static class CodexThemeInstallationPath {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern uint GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder name, uint count, uint flags);
+}
+"@
+}
+$probePath = Join-Path $runtimeDirectory ('.install-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+$probeFile = $null
+try {
+    $probeFile = [IO.File]::Open($probePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+    $physicalFile = New-Object Text.StringBuilder 32768
+    $pathLength = [CodexThemeInstallationPath]::GetFinalPathNameByHandle($probeFile.SafeFileHandle, $physicalFile, 32768, 0)
+    if ($pathLength -eq 0 -or $pathLength -ge 32768) { throw 'Cannot resolve the physical installation path.' }
+    $physicalPath = $physicalFile.ToString()
+    if ($physicalPath.StartsWith('\\?\')) { $physicalPath = $physicalPath.Substring(4) }
+    $physicalDirectory = [IO.Path]::GetDirectoryName($physicalPath)
+    if (-not $physicalDirectory.Equals($runtimeDirectory, [StringComparison]::OrdinalIgnoreCase) -and
+        $physicalPath -match '\\AppData\\Local\\Packages\\[^\\]+\\LocalCache\\Local\\') {
+        throw 'Windows redirected this installation into the app package cache. Run the installer from a regular Windows PowerShell terminal. No runtime files or shortcuts were changed.'
+    }
+} finally {
+    if ($probeFile) { $probeFile.Dispose(); Remove-Item -LiteralPath $probePath -Force }
+}
 foreach ($file in $requiredFiles) {
     $source = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot $file)).Path
     $destination = Join-Path $runtimeDirectory $file

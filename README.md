@@ -30,6 +30,10 @@ cd codex-theme
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+Run the installer from a regular Windows PowerShell terminal. It checks the
+physical installation path and stops if a packaged caller redirects files into
+a private cache that Explorer cannot access through the shortcut path.
+
 Open **Codex Theme** from the Start menu. The installer stores the runtime in
 `%LOCALAPPDATA%\Programs\Codex Theme\runtime` and uses a separate profile in
 `%LOCALAPPDATA%\Programs\Codex Theme\profile`. Sign in on first launch. The PowerShell
