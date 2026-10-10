@@ -15,7 +15,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Node.js 22 or later is required.' }
 $InstallDirectory = [IO.Path]::GetFullPath($InstallDirectory)
 $runtimeDirectory = Join-Path $InstallDirectory 'runtime'
 $profileDirectory = Join-Path $InstallDirectory 'profile'
-$requiredFiles = @('codex-theme.mjs', 'windows-host.mjs', 'windows-packaged-launch.mjs', 'activate-packaged-app.ps1', 'migrate-profile.ps1', 'image.jpg', 'fire.gif', 'Launch Codex Theme.ps1', 'Launch Codex Theme.cmd')
+$requiredFiles = @('codex-theme.mjs', 'windows-host.mjs', 'windows-packaged-launch.mjs', 'activate-packaged-app.ps1', 'migrate-profile.ps1', 'Codex.ico', 'image.jpg', 'fire.gif', 'Launch Codex Theme.ps1', 'Launch Codex Theme.cmd')
 foreach ($file in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $file) -PathType Leaf)) { throw "Missing file: $file" }
 }
@@ -77,6 +77,7 @@ if (-not $NoShortcut) {
     $shortcut.Arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $launcher + '"'
     $shortcut.WorkingDirectory = $runtimeDirectory
     $shortcut.Description = 'Codex with the custom wallpaper and UI theme'
+    $shortcut.IconLocation = (Join-Path $runtimeDirectory 'Codex.ico') + ',0'
     $shortcut.Save()
 }
 Write-Output "Installed Codex Theme: $runtimeDirectory"

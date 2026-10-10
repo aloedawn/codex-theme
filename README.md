@@ -36,7 +36,12 @@ Open **Codex Theme** from the Start menu. The installer stores the runtime in
 installer includes its own Node executable. The launcher runs its worker without a console window and records logs under
 `runtime\logs`. Closing the themed app also closes its worker.
 The installation is independent of the source checkout, so deleting the checkout
-will not remove the installed launcher. To relocate an existing profile, pass
+will not remove the installed launcher. The shortcut uses the bundled
+`runtime\Codex.ico`, whose location stays the same across app updates and theme
+reinstalls. The icon is converted from `icon-space-dark.png` in the
+[official macOS app](https://persistent.oaistatic.com/codex-app-prod/Codex.dmg)
+(version 26.1007.21159), with 16 through 256 pixel sizes and transparency.
+To relocate an existing profile, pass
 `-SourceProfileDirectory 'C:\path\to\old\profile'` to the installer. It copies
 login and sidebar state, preserves the old profile, and synchronizes again once
 the old app closes. The new launcher completes any pending migration before
