@@ -46,6 +46,13 @@ The included [`image.jpg`](image.jpg) and [`fire.gif`](fire.gif) reproduce the a
 - Repairs local queued-message resubmission after the native editor removes the original queue entry. The replacement keeps its neighboring queue position and attachments.
 - Applies only to server queue IDs whose successful deletion the theme observed. Existing updates, consumed messages, remote queues, and native undo keep their normal behavior; uncertain submissions are never retried automatically.
 
+### Memory use
+
+- Checks once a minute for saved local chats that have been inactive for at least 15 minutes. Eligible chats release their tool sessions through the app's native unload lifecycle; opening the chat loads its saved history again. Tool state such as a Node REPL starts fresh.
+- Preserves visible chats, running tasks, pending approvals/input, queued follow-ups, history loads, and chats followed by another window. Both the native app and app server must report the chat idle before release. Unsupported native interfaces leave the app's cleanup policy in control.
+- Avoids subscribing to unused console debugging events. The compatibility usage reader has a bounded network buffer and stops capturing responses once the canonical usage check succeeds.
+- Use `--idle-chat-minutes 0` to retain the app's normal idle-session policy, or pass another positive number of minutes. This does not change or delete chat history, app settings, or plugin configuration.
+
 ### Sidebar information
 
 - Merges ChatGPT web projects and conversations into Codex mode's existing **Projects** and **Recents** sections without adding separate ChatGPT groups.
